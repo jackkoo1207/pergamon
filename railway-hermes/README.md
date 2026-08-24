@@ -1,49 +1,51 @@
-# Hermes Agent on Railway — launch guide
+# Hermes Agent on Railway — launch guide (v2: PostgreSQL edition)
 
-Bundle: `D:\Pergamon\railway-hermes\`
-- `Dockerfile`        — FROM nousresearch/hermes-agent:latest
-- `entrypoint.sh`     — injects Railway env vars → $HERMES_HOME/.env + starts the surface
-- `railway.toml`      — build/deploy config + persistent volume at /data
+Bundle: `D:\Pergamon\railway-hermes\` + root `Dockerfile` / `railway.toml` (repo-root deploy)
+- `Dockerfile`            — FROM nousresearch/hermes-agent:latest + **postgresql-client (psql)**
+- `entrypoint.sh`         — injects env → $HERMES_HOME/.env, **probes PostgreSQL**, starts the surface
+- `railway.toml`          — build config + persistent volume at /data
 
-## Prerequisites (pick one path)
-
-### Path A — Railway web UI (no CLI, ~3 min)
-1. Push this folder to a GitHub repo (or zip-upload)
-2. Railway → **New Project** → **Deploy from GitHub repo** (or **Deploy from Docker Hub** → `nousresearch/hermes-agent:latest` if you skip the Dockerfile)
-3. **Variables** tab — add:
-   | Variable | Value |
+## What it does
+1. Writes API keys from Railway env vars into Hermes' `.env`
+2. Sets the model (`RAILWAY_MODEL`, default `deepseek/deepseek-chat` — works with `DEEPSEEK_API_KEY`)
+3. **PostgreSQL probe**: connects to `DATABASE_URL` with `psql`, prints all tables + row counts
+   to the logs — so you can "see what is inside" in Railway's Logs tab, no agent needed
+4. Starts the surface:
+   | SURFACE | What you get |
    |---|---|
-   | `SURFACE` | `gateway` (Telegram/Discord bot) or `dashboard` (web UI) or `proxy` (OpenAI-compatible API) |
-   | `RAILWAY_MODEL` | e.g. `deepseek/deepseek-chat` or `anthropic/claude-sonnet-4-6` |
-   | `OPENROUTER_API_KEY` | your key (or `NOUS_PORTAL_TOKEN` / provider key) |
-   | `TELEGRAM_BOT_TOKEN` | if SURFACE=gateway + Telegram (any platform token works) |
-   | `HERMES_API_KEY` | if SURFACE=dashboard (auth gate) |
-4. **Volumes** tab → add volume mounted at `/data` (persists sessions/memory/skills)
-5. Deploy. Logs will show `hermes gateway` connecting.
+   | `chat` (default) | one-shot `hermes chat -q` — auto-prompt: *"connect to DATABASE_URL, list tables, summarize what's inside"* |
+   | `gateway` | always-on bot (Telegram/Discord/Slack/WhatsApp…) — needs a platform bot token |
+   | `dashboard` | web admin + embedded chat on :3000 — needs `HERMES_API_KEY` |
+   | `proxy` | OpenAI-compatible endpoint on :3000 |
 
-### Path B — Railway CLI (from this machine)
+## Required Railway variables (already set by you ✅)
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | auto-provided by the Railway Postgres plugin |
+| `DEEPSEEK_API_KEY` | your DeepSeek key |
+| `SURFACE` | optional — leave unset for the DB-inspection one-shot |
+
+## How the agent "sees inside" Postgres
+Hermes runs with full terminal access in the container, and `DATABASE_URL` is in its
+environment — so it can run:
 ```bash
-npm i -g @railway/cli          # or: iwr https://railway.app/install.ps1 | iex
-railway login                  # interactive browser auth — you must do this step
-cd D:\Pergamon\railway-hermes
-railway init                   # create project
-railway up                     # build & deploy
-railway variables --set "SURFACE=gateway" --set "OPENROUTER_API_KEY=sk-..." ...
-railway volume add hermes-data /data
+psql "$DATABASE_URL" -c '\dt'
+psql "$DATABASE_URL" -c 'SELECT * FROM "mytable" LIMIT 10;'
+python -c "import psycopg2,os; ..."   # python is in the image
 ```
+The startup probe already prints `\dt` + row counts to the logs.
 
-## What runs on Railway (non-interactive surfaces)
-| SURFACE | Command | What you get | Needs |
-|---|---|---|---|
-| `gateway` | `hermes gateway` | Always-on bot on Telegram/Discord/Slack/WhatsApp… | platform bot token |
-| `dashboard` | `hermes dashboard` | Web admin + embedded chat (HTTP :3000) | `HERMES_API_KEY` |
-| `proxy` | `hermes proxy` | OpenAI-compatible endpoint | provider OAuth/key |
-| `chat` | `hermes chat -q "…"` | one-shot (good for cron-style jobs) | — |
+## Deploy
+1. Push this repo (D:\Pergamon) to GitHub — already at github.com/jackkoo1207/pergamon
+2. Railway → your Pergamon service → Settings → **Root Directory = `railway-hermes`** (or leave
+   root — the root `Dockerfile`/`railway.toml` now build the same thing)
+3. Add `SURFACE=chat` (optional), keep `DATABASE_URL` + `DEEPSEEK_API_KEY`
+4. Deploy → open **Logs** → see the PostgreSQL probe output → then the agent's summary
 
 ## Notes / gotchas
-- Desktop app & interactive TUI do NOT run on Railway (no display) — use gateway/dashboard/proxy.
-- The docs explicitly bless Railway: *"supported setup for deployments and normal long-running
-  Hermes processes on Render, Railway, Docker, and similar hosts."*
-- Gateway has no HTTP endpoint → Railway healthcheck will show degraded unless SURFACE=dashboard/proxy.
-- Secrets only in env vars → entrypoint writes them to $HERMES_HOME/.env (never commit keys).
-- You are NOT logged into the desktop app on the server — gateway/dashboard auth uses tokens, not OAuth.
+- No HTTP endpoint on chat/gateway surfaces → no healthcheck configured (Railway marks
+  the service healthy while the process runs; one-shot chat exits 0 after answering).
+- `railway.toml` mounts `/data` — sessions, memory and skills persist across redeploys.
+- If you want the agent to keep running 24/7 instead of one-shot, set `SURFACE=gateway`
+  (requires e.g. `TELEGRAM_BOT_TOKEN`).
+- Desktop app / interactive TUI cannot run on Railway (no display).

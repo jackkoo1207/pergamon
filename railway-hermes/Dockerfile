@@ -1,11 +1,20 @@
 # Hermes Agent on Railway — deploy bundle
 # Official image: nousresearch/hermes-agent (docs confirm Railway is a supported host
 # for long-running Hermes processes: "Render, Railway, Docker, and similar hosts")
+#
+# Postgres client is installed so the agent can inspect the Railway PostgreSQL
+# via its terminal tool (psql "$DATABASE_URL").
 
 FROM nousresearch/hermes-agent:latest
 
+# Install PostgreSQL client (psql) — lets Hermes connect to Railway Postgres
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV HERMES_HOME=/data
-ENV SURFACE=gateway
+ENV SURFACE=chat
 
 # Config + secrets are injected at runtime from Railway env vars
 COPY entrypoint.sh /usr/local/bin/hermes-entrypoint

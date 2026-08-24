@@ -1,0 +1,18 @@
+# Railway config-as-code — repo root
+# Builds Hermes from the railway-hermes/ bundle. Required Railway variables:
+#   DATABASE_URL    (Railway Postgres plugin — auto-provided)
+#   DEEPSEEK_API_KEY (LLM provider key)
+#   SURFACE          (optional: chat | gateway | dashboard | proxy)
+#   RAILWAY_MODEL    (optional, default deepseek/deepseek-chat)
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[[mounts]]
+name = "hermes-data"
+path = "/data"

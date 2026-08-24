@@ -8,10 +8,10 @@ dockerfilePath = "Dockerfile"
 [deploy]
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
-# Dashboard/proxy expose HTTP on :3000; gateway (bot mode) has no HTTP,
-# so the healthcheck only matters for dashboard/proxy surfaces.
-healthcheckPath = "/"
-healthcheckTimeout = 300
+# NOTE: no healthcheckPath — chat/gateway surfaces expose no HTTP endpoint.
+# The container stays "Running" while the process is alive (gateway) or
+# completes (chat one-shot). Use dashboard/proxy surfaces if you want an
+# HTTP healthcheck on :3000.
 
 # Persistent volume so sessions, memory, skills and config survive redeploys
 [[mounts]]
