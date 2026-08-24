@@ -26,7 +26,14 @@ Bundle: `D:\Pergamon\railway-hermes\` + root `Dockerfile` / `railway.toml` (repo
    `public` schema — so even if a user asks the agent to read other users' data, the
    **database itself refuses** (permission denied). If the DB is unavailable the agent
    gets NO `DATABASE_URL` at all — the admin URL is never handed to the agent.
-8. Starts the surface:
+8. **Per-user OS isolation (filesystem)**: each user also gets a dedicated Linux account
+   (`u_<user>`, home `/home/u_<user>` with mode 0700) and the agent process is launched
+   via `runuser` as that account, with its own `HERMES_HOME` and uploads dir. The kernel
+   then enforces isolation: user A's agent gets `Permission denied` if it tries to list,
+   read, or write user B's home — verified against real Linux (WSL) in this repo's
+   verification. (Same-container per-user accounts are the practical equivalent of
+   per-user containers on Railway's single-service model.)
+9. Starts the surface:
    | SURFACE | What you get |
    |---|---|
    | `chat` (default) | one-shot `hermes chat -q` — auto-prompt: *"connect to DATABASE_URL, list tables, summarize what's inside"* |

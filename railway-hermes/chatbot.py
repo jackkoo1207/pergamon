@@ -55,7 +55,7 @@ UPLOAD_ROOT = os.path.join(os.environ.get("HERMES_HOME", "/opt/data"), "uploads"
 TOKEN_TTL_HOURS = int(os.environ.get("CHATBOT_TOKEN_TTL_HOURS", "24"))
 
 # Predefined users: "user1:pass1,user2:pass2". NO signup — fixed list only.
-_USERS_RAW = os.environ.get("CHATBOT_USERS", "test:123456")
+_USERS_RAW = os.environ.get("CHATBOT_USERS", "test:123456,test2:654321")
 USERS = {}
 for _pair in _USERS_RAW.split(","):
     if ":" in _pair:
@@ -97,6 +97,12 @@ CREATE TABLE IF NOT EXISTS hermes_users (
 
 # username -> restricted DATABASE_URL (per-user role); built at login
 USER_DB = {}
+
+# username -> isolated Linux account (u_<safe>, home 0700) for agent processes
+USER_OS = {}
+_PROVIDER_ENV_KEYS = ["DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY",
+                      "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY",
+                      "MISTRAL_API_KEY", "NOUS_PORTAL_TOKEN"]
 
 PAGE = r"""<!doctype html>
 <html lang="en">
@@ -419,7 +425,8 @@ def _save_upload(user: str, file_obj):
     if size <= 0 or size > MAX_UPLOAD_MB * 1024 * 1024:
         return None
     safe_user = re.sub(r"[^A-Za-z0-9_.-]", "_", user)
-    udir = os.path.join(UPLOAD_ROOT, safe_user)
+    osuser = USER_OS.get(user)
+    udir = os.path.join(f"/home/{osuser}", "uploads") if osuser else os.path.join(UPLOAD_ROOT, safe_user)
     os.makedirs(udir, exist_ok=True)
     dest = os.path.join(udir, f"{int(time.time() * 1000)}-{os.path.basename(file_obj.filename)}")
     file_obj.save(dest)
@@ -438,6 +445,53 @@ def _remember(chat_id: str, session_id: str, persist: bool = True) -> None:
         _db_save_session(chat_id, session_id)
 
 
+def _safe_os_user(username: str) -> str:
+    return "u_" + re.sub(r"[^A-Za-z0-9_]", "_", username)[:24]
+
+
+def _ensure_os_user(username: str) -> str | None:
+    """Create an isolated Linux account (home 0700) so the agent process runs as
+    that user and cannot read other users' data at the filesystem level.
+    Returns the account name, or None when not possible (non-root / non-POSIX)
+    — in that case the app falls back to running agents as the container user."""
+    if os.name != "posix":
+        return None
+    try:
+        if os.geteuid() != 0 or shutil.which("useradd") is None:
+            return None
+    except AttributeError:
+        return None
+
+    osuser = _safe_os_user(username)
+    home = f"/home/{osuser}"
+    if subprocess.run(["id", "-u", osuser], capture_output=True).returncode != 0:
+        subprocess.run(["useradd", "-m", "-s", "/bin/bash", osuser], check=False)
+    subprocess.run(["chmod", "700", home], check=False)
+
+    hh = os.path.join(home, "hermes")
+    for d in ("hermes", "uploads"):
+        os.makedirs(os.path.join(home, d), exist_ok=True)
+        subprocess.run(["chown", "-R", f"{osuser}:{osuser}", os.path.join(home, d)], check=False)
+
+    # per-user hermes secrets (.env) + model config, so the user's agent works standalone
+    env_lines = [f"{k}={os.environ[k]}" for k in _PROVIDER_ENV_KEYS if os.environ.get(k)]
+    if env_lines:
+        env_path = os.path.join(hh, ".env")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(env_lines) + "\n")
+        subprocess.run(["chown", f"{osuser}:{osuser}", env_path], check=False)
+    model = os.environ.get("RAILWAY_MODEL", "deepseek/deepseek-chat")
+    hermes_bin = os.path.abspath(HERMES)
+    if shutil.which("runuser"):
+        subprocess.run(["runuser", "-u", osuser, "--", "env", f"HERMES_HOME={hh}",
+                        hermes_bin, "config", "set", "model", model],
+                       capture_output=True, text=True, check=False)
+
+    USER_OS[username] = osuser
+    print(f"[chatbot] user {username}: isolated OS account {osuser} (home {home}, 0700)")
+    return osuser
+
+
 def _run_agent(chat_id: str, message: str, user: str = "") -> str:
     """Run one full agent turn, resuming the chat's session when one exists.
     The agent's DATABASE_URL is the user's RESTRICTED url (own schema only)."""
@@ -448,23 +502,42 @@ def _run_agent(chat_id: str, message: str, user: str = "") -> str:
     elif user:
         run_env.pop("DATABASE_URL", None)  # never hand the admin URL to the agent
 
+    osuser = USER_OS.get(user)
+    if osuser:
+        run_env["HERMES_HOME"] = f"/home/{osuser}/hermes"  # per-user hermes state
+
     sid = SESSIONS.get(chat_id)
-    cmd = [HERMES, "chat", "-Q"]
+    cmd = [os.path.abspath(HERMES), "chat", "-Q"]
     if sid:
         cmd += ["--resume", sid]
     cmd += ["-q", message]
 
+    if osuser and shutil.which("runuser"):
+        # run as the user's isolated OS account — filesystem isolation is
+        # enforced by the kernel (home dirs are 0700)
+        agent_env = {"HERMES_HOME": run_env["HERMES_HOME"]}
+        if "DATABASE_URL" in run_env:
+            agent_env["DATABASE_URL"] = run_env["DATABASE_URL"]
+        for k in _PROVIDER_ENV_KEYS:
+            if os.environ.get(k):
+                agent_env[k] = os.environ[k]
+        prefix = ["runuser", "-u", osuser, "--", "env"] + [f"{k}={v}" for k, v in agent_env.items()]
+    else:
+        prefix = None  # fallback: run as the container user (dev/testing)
+
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=TIMEOUT, env=run_env,
+        (prefix + cmd) if prefix else cmd, capture_output=True, text=True, timeout=TIMEOUT,
+        env=run_env if prefix is None else None,
     )
 
     # Resume can fail (e.g. session lost after a container restart) — retry fresh
     if sid and proc.returncode != 0:
         SESSIONS.pop(chat_id, None)
         _db_exec("DELETE FROM hermes_chats WHERE chat_id = %s", (chat_id,))
+        fresh = [os.path.abspath(HERMES), "chat", "-Q", "-q", message]
         proc = subprocess.run(
-            [HERMES, "chat", "-Q", "-q", message], capture_output=True, text=True,
-            timeout=TIMEOUT, env=run_env,
+            (prefix + fresh) if prefix else fresh, capture_output=True, text=True,
+            timeout=TIMEOUT, env=run_env if prefix is None else None,
         )
 
     out = proc.stdout or ""
@@ -497,7 +570,8 @@ def login():
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
     if username in USERS and secrets.compare_digest(USERS[username], password):
-        _ensure_user_db(username)  # provision + cache restricted URL (best-effort)
+        _ensure_user_db(username)   # per-user DB schema/role (best-effort)
+        _ensure_os_user(username)   # isolated OS account (best-effort)
         return jsonify(token=_issue_token(username), user=username)
     return jsonify(error="unauthorized"), 401
 
