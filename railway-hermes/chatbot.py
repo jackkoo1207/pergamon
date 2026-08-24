@@ -40,6 +40,8 @@ TOKEN = os.environ.get("CHATBOT_TOKEN", "")
 HERMES = os.environ.get("HERMES_BIN") or shutil.which("hermes") or "/opt/hermes/.venv/bin/hermes"
 TIMEOUT = int(os.environ.get("CHATBOT_TIMEOUT", "180"))
 DB_URL = os.environ.get("DATABASE_URL", "")
+MAX_UPLOAD_MB = int(os.environ.get("CHATBOT_MAX_UPLOAD_MB", "20"))
+UPLOAD_DIR = os.path.join(os.environ.get("HERMES_HOME", "/opt/data"), "uploads")
 
 # chat_id -> hermes session_id (per-browser-chat continuity)
 SESSIONS = {}
@@ -88,16 +90,23 @@ PAGE = """<!doctype html>
 <h1>Hermes <span class="hint">(agentic · tools · multi-turn memory · saved to Postgres)</span></h1>
 <div id="messages"></div>
 <form id="form">
-  <input type="text" id="msg" placeholder="Ask anything…" autocomplete="off">
+  <input type="text" id="msg" placeholder="Ask anything… (or attach a PDF)" autocomplete="off">
+  <label id="filelabel" for="file" title="Attach a PDF">📎</label>
+  <input type="file" id="file" accept="application/pdf,.pdf" hidden>
   <button id="send" type="submit">Send</button>
 </form>
 <script>
 const chatId = (localStorage.getItem('chatId') || '') || (localStorage.setItem('chatId', Date.now() + '-' + Math.random().toString(36).slice(2, 8)), localStorage.getItem('chatId'));
 const TOKEN = {{ token_json }};
+let attached = null;
 async function post(msg) {
-  const headers = {'Content-Type': 'application/json'};
+  const fd = new FormData();
+  fd.append('message', msg);
+  fd.append('chat_id', chatId);
+  if (attached) fd.append('file', attached);
+  const headers = {};
   if (TOKEN) headers['X-Chatbot-Token'] = TOKEN;
-  const r = await fetch('/api/chat', {method: 'POST', headers, body: JSON.stringify({message: msg, chat_id: chatId})});
+  const r = await fetch('/api/chat', {method: 'POST', headers, body: fd});
   const d = await r.json();
   if (!r.ok) throw new Error(d.error || r.status);
   return d.reply;
@@ -109,14 +118,21 @@ function add(role, text) {
   document.getElementById('messages').appendChild(el);
   window.scrollTo(0, document.body.scrollHeight);
 }
+document.getElementById('file').addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  if (!f) { attached = null; document.getElementById('filelabel').textContent = '📎'; return; }
+  if (!f.name.toLowerCase().endsWith('.pdf')) { alert('Only PDF files can be attached'); e.target.value = ''; return; }
+  attached = f;
+  document.getElementById('filelabel').textContent = '📎 ' + f.name;
+});
 document.getElementById('form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = document.getElementById('msg');
   const btn = document.getElementById('send');
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && !attached) return;
   input.value = ''; btn.disabled = true;
-  add('user', text);
+  add('user', (attached ? '📎 ' + attached.name + '\n' : '') + text || '(attached file)');
   add('bot', '…');
   try {
     const reply = await post(text);
@@ -126,6 +142,9 @@ document.getElementById('form').addEventListener('submit', async (e) => {
     last.className = 'msg err';
     last.textContent = 'Error: ' + err.message;
   }
+  attached = null;
+  document.getElementById('filelabel').textContent = '📎';
+  document.getElementById('file').value = '';
   btn.disabled = false;
   input.focus();
 });
@@ -209,6 +228,25 @@ def _db_log_message(chat_id: str, role: str, content: str) -> None:
 
 
 # ------------------------------------------------------------- session map
+def _save_upload(file_obj):
+    """Save an uploaded PDF to UPLOAD_DIR; return the path, or None on reject."""
+    if file_obj is None or not file_obj.filename:
+        return None
+    name = (file_obj.filename or "").lower()
+    if not name.endswith(".pdf"):
+        return None
+    file_obj.stream.seek(0, os.SEEK_END)
+    size = file_obj.stream.tell()
+    file_obj.stream.seek(0)
+    if size <= 0 or size > MAX_UPLOAD_MB * 1024 * 1024:
+        return None
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    dest = os.path.join(UPLOAD_DIR, f"{int(time.time() * 1000)}-{os.path.basename(file_obj.filename)}")
+    file_obj.save(dest)
+    print(f"[chatbot] saved upload: {dest} ({size} bytes)")
+    return dest
+
+
 def _remember(chat_id: str, session_id: str, persist: bool = True) -> None:
     if chat_id not in SESSIONS:
         _SESSIONS_ORDER.append(chat_id)
@@ -271,13 +309,26 @@ def index():
 def chat():
     if TOKEN and request.headers.get("X-Chatbot-Token", "") != TOKEN:
         return jsonify(error="unauthorized"), 401
-    data = request.get_json(silent=True) or {}
-    message = (data.get("message") or "").strip()
+
+    # multipart (file upload) or JSON
+    if request.files:
+        message = (request.form.get("message") or "").strip()
+        chat_id = (request.form.get("chat_id") or "default")[:64]
+        f = request.files.get("file")
+        path = _save_upload(f)
+        if path is None and f is not None:
+            return jsonify(error="invalid or too-large file (PDF only, max %dMB)" % MAX_UPLOAD_MB), 400
+        if path:
+            message = f"[User attached a PDF at: {path}]\n\n{message or 'Please read the attached PDF and summarize it.'}"
+    else:
+        data = request.get_json(silent=True) or {}
+        message = (data.get("message") or "").strip()
+        chat_id = (data.get("chat_id") or "default")[:64]
+
     if not message:
         return jsonify(error="empty message"), 400
-    if len(message) > 4000:
+    if len(message) > 8000:
         return jsonify(error="message too long"), 400
-    chat_id = (data.get("chat_id") or "default")[:64]
 
     _db_log_message(chat_id, "user", message)
     with _lock:  # one agent process at a time (prototype-grade)

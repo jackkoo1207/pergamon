@@ -10,7 +10,11 @@ Bundle: `D:\Pergamon\railway-hermes\` + root `Dockerfile` / `railway.toml` (repo
 2. Sets the model (`RAILWAY_MODEL`, default `deepseek/deepseek-chat` — works with `DEEPSEEK_API_KEY`)
 3. **PostgreSQL probe**: connects to `DATABASE_URL` with `psql`, prints all tables + row counts
    to the logs — so you can "see what is inside" in Railway's Logs tab, no agent needed
-4. Starts the surface:
+4. **Session memory → Postgres**: chat history + chat→hermes-session mapping persisted to
+   `hermes_chats` / `hermes_messages` (conversations survive restarts)
+5. **PDF attachment**: the chat page has a 📎 button — upload a PDF, the agent reads it
+   with its own file tools (saved to `$HERMES_HOME/uploads/`, max 20MB)
+6. Starts the surface:
    | SURFACE | What you get |
    |---|---|
    | `chat` (default) | one-shot `hermes chat -q` — auto-prompt: *"connect to DATABASE_URL, list tables, summarize what's inside"* |
