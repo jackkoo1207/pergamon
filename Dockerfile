@@ -11,7 +11,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-ENV HERMES_HOME=/data
+# HERMES_HOME is decided at runtime by entrypoint.sh (Railway volumes may be
+# write-restricted; /opt/data is the image default and always writable).
 ENV SURFACE=chat
 
 COPY railway-hermes/entrypoint.sh /usr/local/bin/hermes-entrypoint

@@ -4,9 +4,25 @@
 # PostgreSQL database, then starts the requested surface.
 set -e
 
-mkdir -p "$HERMES_HOME"
+# 1. Determine a WRITABLE HERMES_HOME.
+#    Railway volumes can be mounted read-only / permission-restricted even for
+#    root (observed: PermissionError '/data/cron'). /opt/data is the image's
+#    default home on the container filesystem and is always writable.
+if [ -z "${HERMES_HOME:-}" ]; then
+  HERMES_HOME=/opt/data
+fi
+if mkdir -p "$HERMES_HOME/.hermes-wtest" 2>/dev/null; then
+  rmdir "$HERMES_HOME/.hermes-wtest" 2>/dev/null || true
+  echo "[hermes-entrypoint] HERMES_HOME=$HERMES_HOME (writable)"
+else
+  HERMES_HOME=/opt/data
+  mkdir -p "$HERMES_HOME"
+  echo "[hermes-entrypoint] $HERMES_HOME not writable — using fallback HERMES_HOME=/opt/data"
+fi
+chmod 777 "$HERMES_HOME" 2>/dev/null || true
+export HERMES_HOME
 
-# 1. Secrets -> hermes .env (API keys / bot tokens come from Railway env vars)
+# 2. Secrets -> hermes .env (API keys / bot tokens come from Railway env vars)
 : > "$HERMES_HOME/.env"
 for var in OPENROUTER_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY \
            TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN SLACK_BOT_TOKEN WHATSAPP_TOKEN \
@@ -16,15 +32,14 @@ for var in OPENROUTER_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY 
   fi
 done
 
-# 2. Model/provider (override with RAILWAY_MODEL; defaults to DeepSeek since
+# 3. Model/provider (override with RAILWAY_MODEL; defaults to DeepSeek since
 #    DEEPSEEK_API_KEY is the key you provisioned on Railway)
-if [ -n "${RAILWAY_MODEL:-}" ]; then
-  hermes config set model "$RAILWAY_MODEL"
-else
-  hermes config set model deepseek/deepseek-chat || true
+MODEL="${RAILWAY_MODEL:-deepseek/deepseek-chat}"
+if ! hermes config set model "$MODEL" 2>/dev/null; then
+  echo "[hermes-entrypoint] WARNING: 'hermes config set model $MODEL' failed — check HERMES_HOME permissions"
 fi
 
-# 3. PostgreSQL probe — "see what is inside" the Railway Postgres.
+# 4. PostgreSQL probe — "see what is inside" the Railway Postgres.
 #    Prints schema + row counts to the logs so the deploy proves DB connectivity.
 if [ -n "${DATABASE_URL:-}" ]; then
   echo "===== [hermes-entrypoint] PostgreSQL probe ====="
@@ -48,7 +63,7 @@ else
   echo "[hermes-entrypoint] DATABASE_URL not set — skipping DB probe."
 fi
 
-# 4. Start the requested surface:
+# 5. Start the requested surface:
 #      gateway   -> always-on messaging bot (Telegram/Discord/Slack/WhatsApp…)
 #      dashboard -> web admin UI on :3000
 #      proxy     -> OpenAI-compatible endpoint on :3000
