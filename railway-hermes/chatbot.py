@@ -90,9 +90,9 @@ PAGE = """<!doctype html>
 <h1>Hermes <span class="hint">(agentic · tools · multi-turn memory · saved to Postgres)</span></h1>
 <div id="messages"></div>
 <form id="form">
-  <input type="text" id="msg" placeholder="Ask anything… (or attach a PDF)" autocomplete="off">
-  <label id="filelabel" for="file" title="Attach a PDF">📎</label>
-  <input type="file" id="file" accept="application/pdf,.pdf" hidden>
+  <input type="text" id="msg" placeholder="Ask anything… (or attach a file)" autocomplete="off">
+  <label id="filelabel" for="file" title="Attach a file (pdf, docx, pptx, xlsx, txt, …)">📎</label>
+  <input type="file" id="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.csv,.md,.json,.rtf,.odt,.ods" hidden>
   <button id="send" type="submit">Send</button>
 </form>
 <script>
@@ -121,7 +121,7 @@ function add(role, text) {
 document.getElementById('file').addEventListener('change', (e) => {
   const f = e.target.files[0];
   if (!f) { attached = null; document.getElementById('filelabel').textContent = '📎'; return; }
-  if (!f.name.toLowerCase().endsWith('.pdf')) { alert('Only PDF files can be attached'); e.target.value = ''; return; }
+  if (f.size > 20 * 1024 * 1024) { alert('File too large (max 20MB)'); e.target.value = ''; return; }
   attached = f;
   document.getElementById('filelabel').textContent = '📎 ' + f.name;
 });
@@ -229,11 +229,8 @@ def _db_log_message(chat_id: str, role: str, content: str) -> None:
 
 # ------------------------------------------------------------- session map
 def _save_upload(file_obj):
-    """Save an uploaded PDF to UPLOAD_DIR; return the path, or None on reject."""
+    """Save an uploaded file to UPLOAD_DIR; return the path, or None on reject."""
     if file_obj is None or not file_obj.filename:
-        return None
-    name = (file_obj.filename or "").lower()
-    if not name.endswith(".pdf"):
         return None
     file_obj.stream.seek(0, os.SEEK_END)
     size = file_obj.stream.tell()
@@ -317,9 +314,9 @@ def chat():
         f = request.files.get("file")
         path = _save_upload(f)
         if path is None and f is not None:
-            return jsonify(error="invalid or too-large file (PDF only, max %dMB)" % MAX_UPLOAD_MB), 400
+            return jsonify(error="invalid or too-large file (max %dMB)" % MAX_UPLOAD_MB), 400
         if path:
-            message = f"[User attached a PDF at: {path}]\n\n{message or 'Please read the attached PDF and summarize it.'}"
+            message = f"[User attached a file at: {path}]\n\n{message or 'Please read the attached file and summarize it.'}"
     else:
         data = request.get_json(silent=True) or {}
         message = (data.get("message") or "").strip()

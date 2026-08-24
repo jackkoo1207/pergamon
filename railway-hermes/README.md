@@ -12,8 +12,9 @@ Bundle: `D:\Pergamon\railway-hermes\` + root `Dockerfile` / `railway.toml` (repo
    to the logs — so you can "see what is inside" in Railway's Logs tab, no agent needed
 4. **Session memory → Postgres**: chat history + chat→hermes-session mapping persisted to
    `hermes_chats` / `hermes_messages` (conversations survive restarts)
-5. **PDF attachment**: the chat page has a 📎 button — upload a PDF, the agent reads it
-   with its own file tools (saved to `$HERMES_HOME/uploads/`, max 20MB)
+5. **File attachment**: the chat page has a 📎 button — attach any document (PDF, DOC/DOCX,
+   PPT/PPTX, XLS/XLSX, TXT, CSV, MD, …), the agent reads it with its own file tools
+   (saved to `$HERMES_HOME/uploads/`, max 20MB)
 6. Starts the surface:
    | SURFACE | What you get |
    |---|---|
