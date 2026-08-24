@@ -14,8 +14,12 @@ Bundle: `D:\Pergamon\railway-hermes\` + root `Dockerfile` / `railway.toml` (repo
    `hermes_chats` / `hermes_messages` (conversations survive restarts)
 5. **File attachment**: the chat page has a 📎 button — attach any document (PDF, DOC/DOCX,
    PPT/PPTX, XLS/XLSX, TXT, CSV, MD, …), the agent reads it with its own file tools
-   (saved to `$HERMES_HOME/uploads/`, max 20MB)
-6. Starts the surface:
+   (saved to `$HERMES_HOME/uploads/<user>/`, max 20MB)
+6. **Login & per-user isolation**: predefined users only (NO signup) via `CHATBOT_USERS`
+   ("user:pass,user2:pass2"; default `test:123456`). Login issues a TTL-limited token
+   (`CHATBOT_TOKEN_TTL_HOURS`, default 24h). All state is user-scoped: hermes sessions,
+   chat history and uploads are namespaced per user — users can't see each other's data.
+7. Starts the surface:
    | SURFACE | What you get |
    |---|---|
    | `chat` (default) | one-shot `hermes chat -q` — auto-prompt: *"connect to DATABASE_URL, list tables, summarize what's inside"* |
