@@ -1,0 +1,15 @@
+# HBM manual + extracts — excluded (third-party copyrighted material)
+b4be0e.pdf
+b4be0e_text.txt
+HBM_MIG200_EU_DoC.txt
+
+# OS / editor junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# git
+*.orig

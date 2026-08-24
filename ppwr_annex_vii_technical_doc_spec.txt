@@ -1,0 +1,39 @@
+ANNEX VII
+ Conformity assessment procedure
+ Module A
+ Internal production control
+ 1.
+ Internal production control is the conformity assessment procedure whereby the manufacturer fulfils the obligations laid down in points 2, 3 and 4 and ensures and declares on his sole responsibility that the packaging concerned satisfies the requirements of Articles 5 to 12 of this Regulation that apply to it. 
+ 2.   Technical documentation
+ The manufacturer shall establish the technical documentation. The documentation shall make it possible to assess the packaging’s conformity with the applicable requirements, and shall include an adequate analysis and assessment of the risks of non-conformity.
+ The technical documentation shall specify the applicable requirements and shall cover, as far as relevant for the assessment, the design, manufacture and operation of the packaging. The technical documentation shall contain, wherever applicable, at least the following elements:
+ (a)
+ a general description of the packaging and its intended use;
+ (b)
+ conceptual design, manufacturing drawings and materials of components;
+ (c)
+ descriptions and explanations necessary for the understanding of the drawings provided under point (b) and the schemes and operation of the packaging;
+ (d)
+ a list of:
+ (i)
+ the harmonised standards, referred to in Article 36, applied in full or in part;
+ (ii)
+ the common specifications, referred to in Article 37, applied in full or in part;
+ (iii)
+ other relevant technical specifications used for measurement or calculation purposes;
+ (iv)
+ in the event of partly applied harmonised standards or common specifications, an indication of the parts which have been applied;
+ (v)
+ in the event of harmonised standards or common specifications not being applied, a description of the solutions adopted to meet the requirements referred to in point 1;
+ (e)
+ a qualitative description of how the assessments provided for in Articles 6, 10 and 11 have been carried out; and
+ (f)
+ test reports.
+ 3.   Manufacturing
+ The manufacturer shall take all measures necessary so that the manufacturing process and the monitoring thereof ensure compliance of the manufactured packaging with the technical documentation referred to in point 2 and with the requirements referred to in point 1.
+ 4.   Declaration of conformity
+ The manufacturer shall draw up a written declaration of conformity for each packaging type and keep it together with the technical documentation at the disposal of the national authorities for 5 years after single-use packaging has been placed on the market, and 10 years after reusable packaging has been placed on the market. The declaration of conformity shall identify the packaging for which it has been drawn up.
+ A copy of the declaration of conformity shall be made available to the relevant authorities upon request.
+ 5.   Authorised representative
+ The manufacturer’s obligations set out in point 4 as regards keeping the technical documentation may be fulfilled by its authorised representative, on its behalf and under its responsibility, provided that those obligations are specified in the mandate.
+ 
