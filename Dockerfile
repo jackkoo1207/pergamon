@@ -16,7 +16,7 @@ RUN apt-get update \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-pip \
     && rm -rf /var/lib/apt/lists/* \
-    && /usr/bin/python3 -m pip install --no-cache-dir --break-system-packages flask
+    && /usr/bin/python3 -m pip install --no-cache-dir --break-system-packages flask psycopg2-binary
 
 # HERMES_HOME is decided at runtime by entrypoint.sh (Railway volumes may be
 # write-restricted; /opt/data is the image default and always writable).

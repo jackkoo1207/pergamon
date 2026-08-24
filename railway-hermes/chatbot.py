@@ -7,7 +7,13 @@ same agent loop used everywhere. Sessions are RESUMED across turns
 (`hermes chat --resume <session_id>`), so the conversation keeps memory and
 context like the desktop/CLI chat — not a stateless one-shot per message.
 
-Requires: flask (installed in the image venv).
+Session memory is persisted to PostgreSQL (DATABASE_URL, e.g. Railway Postgres):
+  hermes_chats    chat_id -> hermes session_id   (survives app restarts)
+  hermes_messages every user/agent turn          (full conversation log)
+The app degrades gracefully to in-memory-only when DATABASE_URL is unset or
+unreachable.
+
+Requires: flask, psycopg2-binary (installed in the image).
 Optional auth: if CHATBOT_TOKEN is set, the UI asks for it and every POST
 must carry it (X-Chatbot-Token header).
 """
@@ -20,18 +26,42 @@ import time
 
 from flask import Flask, jsonify, render_template_string, request
 
+try:
+    import psycopg2
+    _PSYCOPG2 = True
+except Exception:
+    psycopg2 = None
+    _PSYCOPG2 = False
+
 app = Flask(__name__)
 _lock = threading.Lock()
 
 TOKEN = os.environ.get("CHATBOT_TOKEN", "")
 HERMES = os.environ.get("HERMES_BIN") or shutil.which("hermes") or "/opt/hermes/.venv/bin/hermes"
 TIMEOUT = int(os.environ.get("CHATBOT_TIMEOUT", "180"))
+DB_URL = os.environ.get("DATABASE_URL", "")
 
 # chat_id -> hermes session_id (per-browser-chat continuity)
 SESSIONS = {}
 _SESSIONS_ORDER = []
 SESSION_CAP = int(os.environ.get("CHATBOT_SESSION_CAP", "30"))
 _SESSION_RE = re.compile(r"session_id:\s*(\S+)")
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS hermes_chats (
+    chat_id            TEXT PRIMARY KEY,
+    hermes_session_id  TEXT NOT NULL,
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS hermes_messages (
+    id         BIGSERIAL PRIMARY KEY,
+    chat_id    TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_hermes_messages_chat ON hermes_messages (chat_id, created_at);
+"""
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -55,7 +85,7 @@ PAGE = """<!doctype html>
 </style>
 </head>
 <body>
-<h1>Hermes <span class="hint">(agentic · tools enabled · multi-turn memory)</span></h1>
+<h1>Hermes <span class="hint">(agentic · tools · multi-turn memory · saved to Postgres)</span></h1>
 <div id="messages"></div>
 <form id="form">
   <input type="text" id="msg" placeholder="Ask anything…" autocomplete="off">
@@ -104,19 +134,96 @@ document.getElementById('form').addEventListener('submit', async (e) => {
 </html>"""
 
 
-def _remember(chat_id: str, session_id: str) -> None:
+# ---------------------------------------------------------------- DB layer
+_db = None
+
+
+def _db_connect() -> object:
+    """Return a live psycopg2 connection, or None when DB is unavailable."""
+    global _db
+    if not DB_URL or not _PSYCOPG2:
+        return None
+    try:
+        if _db is None or _db.closed:
+            _db = psycopg2.connect(DB_URL)
+        return _db
+    except Exception:
+        return None
+
+
+def _db_exec(sql: str, params: tuple = ()) -> bool:
+    conn = _db_connect()
+    if conn is None:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+        conn.commit()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def _db_query(sql: str, params: tuple = ()) -> list:
+    conn = _db_connect()
+    if conn is None:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+    except Exception:
+        return []
+
+
+def _db_init() -> None:
+    if _db_exec(_SCHEMA):
+        print(f"[chatbot] PostgreSQL session storage ready ({DB_URL.split('@')[-1]})")
+    else:
+        print("[chatbot] WARNING: PostgreSQL unavailable — session memory is in-memory only")
+
+
+def _db_load_sessions() -> None:
+    for chat_id, sid in _db_query("SELECT chat_id, hermes_session_id FROM hermes_chats"):
+        _remember(chat_id, sid, persist=False)
+
+
+def _db_save_session(chat_id: str, sid: str) -> None:
+    _db_exec(
+        "INSERT INTO hermes_chats (chat_id, hermes_session_id) VALUES (%s, %s) "
+        "ON CONFLICT (chat_id) DO UPDATE SET hermes_session_id = EXCLUDED.hermes_session_id, "
+        "updated_at = now()",
+        (chat_id, sid),
+    )
+
+
+def _db_log_message(chat_id: str, role: str, content: str) -> None:
+    _db_exec(
+        "INSERT INTO hermes_messages (chat_id, role, content) VALUES (%s, %s, %s)",
+        (chat_id, role, content),
+    )
+
+
+# ------------------------------------------------------------- session map
+def _remember(chat_id: str, session_id: str, persist: bool = True) -> None:
     if chat_id not in SESSIONS:
         _SESSIONS_ORDER.append(chat_id)
     SESSIONS[chat_id] = session_id
     while len(_SESSIONS_ORDER) > SESSION_CAP:
         old = _SESSIONS_ORDER.pop(0)
         SESSIONS.pop(old, None)
+    if persist:
+        _db_save_session(chat_id, session_id)
 
 
 def _run_agent(chat_id: str, message: str) -> str:
     """Run one full agent turn, resuming the chat's session when one exists."""
-    cmd = [HERMES, "chat", "-Q"]
     sid = SESSIONS.get(chat_id)
+    cmd = [HERMES, "chat", "-Q"]
     if sid:
         cmd += ["--resume", sid]
     cmd += ["-q", message]
@@ -125,6 +232,17 @@ def _run_agent(chat_id: str, message: str) -> str:
         cmd, capture_output=True, text=True, timeout=TIMEOUT,
         env=dict(os.environ, HERMES_HOME=os.environ.get("HERMES_HOME", "/opt/data")),
     )
+
+    # Resume can fail (e.g. session lost after a container restart) — retry fresh
+    if sid and proc.returncode != 0:
+        SESSIONS.pop(chat_id, None)
+        _db_exec("DELETE FROM hermes_chats WHERE chat_id = %s", (chat_id,))
+        proc = subprocess.run(
+            [HERMES, "chat", "-Q", "-q", message], capture_output=True, text=True,
+            timeout=TIMEOUT,
+            env=dict(os.environ, HERMES_HOME=os.environ.get("HERMES_HOME", "/opt/data")),
+        )
+
     out = proc.stdout or ""
     err = proc.stderr or ""
 
@@ -143,6 +261,7 @@ def _run_agent(chat_id: str, message: str) -> str:
     return reply
 
 
+# ------------------------------------------------------------------ routes
 @app.get("/")
 def index():
     return render_template_string(PAGE, token_json=("true" if TOKEN else "false"))
@@ -160,14 +279,19 @@ def chat():
         return jsonify(error="message too long"), 400
     chat_id = (data.get("chat_id") or "default")[:64]
 
+    _db_log_message(chat_id, "user", message)
     with _lock:  # one agent process at a time (prototype-grade)
         started = time.time()
         try:
             reply = _run_agent(chat_id, message)
         except subprocess.TimeoutExpired:
             return jsonify(error=f"agent timed out after {TIMEOUT}s"), 504
+    _db_log_message(chat_id, "agent", reply)
     return jsonify(reply=reply, elapsed=round(time.time() - started, 1))
 
 
 if __name__ == "__main__":
+    _db_init()
+    _db_load_sessions()
+    print(f"[chatbot] surface ready (hermes={HERMES}, token_auth={bool(TOKEN)})")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "3000")), threaded=True)
