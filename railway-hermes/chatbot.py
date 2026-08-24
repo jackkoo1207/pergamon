@@ -95,6 +95,22 @@ CREATE TABLE IF NOT EXISTS hermes_users (
 );
 """
 
+# Shared (all-user) EU-regulation store. PUBLIC grants = every user's agent can
+# read it, nobody can write except the app (admin).
+_SHARED_SCHEMA = """
+CREATE SCHEMA IF NOT EXISTS shared;
+CREATE TABLE IF NOT EXISTS shared.regulations (
+    id         SERIAL PRIMARY KEY,
+    title      TEXT NOT NULL UNIQUE,
+    celex      TEXT,
+    content    TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+GRANT USAGE ON SCHEMA shared TO PUBLIC;
+GRANT SELECT ON shared.regulations TO PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA shared GRANT SELECT ON TABLES TO PUBLIC;
+"""
+
 # username -> restricted DATABASE_URL (per-user role); built at login
 USER_DB = {}
 
@@ -327,10 +343,35 @@ def _db_query(sql: str, params: tuple = ()) -> list:
 
 
 def _db_init() -> None:
-    if _db_exec(_SCHEMA):
+    if _db_exec(_SCHEMA) and _db_exec(_SHARED_SCHEMA):
         print(f"[chatbot] PostgreSQL session storage ready ({DB_URL.split('@')[-1]})")
+        _seed_regulations()
     else:
         print("[chatbot] WARNING: PostgreSQL unavailable — session memory is in-memory only")
+
+
+def _seed_regulations() -> None:
+    """Upsert EU-regulation texts from REG_SEED_DIR into shared.regulations.
+    Idempotent; runs at every startup so the shared store self-heals."""
+    d = os.environ.get("REG_SEED_DIR", "")
+    if not d or not os.path.isdir(d):
+        return
+    for fn in sorted(os.listdir(d)):
+        if not fn.lower().endswith(".txt"):
+            continue
+        p = os.path.join(d, fn)
+        try:
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        except OSError:
+            continue
+        title = os.path.splitext(fn)[0]
+        if _db_exec(
+            "INSERT INTO shared.regulations (title, content) VALUES (%s, %s) "
+            "ON CONFLICT (title) DO UPDATE SET content = EXCLUDED.content, updated_at = now()",
+            (title, content),
+        ):
+            print(f"[chatbot] seeded shared regulation: {title} ({len(content)} chars)")
 
 
 def _restricted_url(username: str, role: str, password: str, schema: str) -> str:
@@ -376,6 +417,13 @@ def _ensure_user_db(username: str) -> str | None:
                         .format(pgsql.Identifier(role)))
             cur.execute(pgsql.SQL("ALTER ROLE {} SET search_path TO {}")
                         .format(pgsql.Identifier(role), pgsql.Identifier(schema)))
+            cur.execute(pgsql.SQL(
+                "CREATE TABLE IF NOT EXISTS {}.documents ("
+                " id SERIAL PRIMARY KEY, filename TEXT NOT NULL, path TEXT, "
+                " content TEXT, uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            ).format(pgsql.Identifier(schema)))
+            cur.execute(pgsql.SQL("GRANT ALL ON {}.documents TO {}")
+                        .format(pgsql.Identifier(schema), pgsql.Identifier(role)))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -431,6 +479,20 @@ def _save_upload(user: str, file_obj):
     dest = os.path.join(udir, f"{int(time.time() * 1000)}-{os.path.basename(file_obj.filename)}")
     file_obj.save(dest)
     print(f"[chatbot] saved upload: {dest} ({size} bytes)")
+
+    # record in the user's own schema (per-user database) so the agent can
+    # query it; text files get their content mirrored for easy grep
+    content = None
+    if dest.lower().endswith((".txt", ".md", ".csv", ".json")):
+        try:
+            with open(dest, encoding="utf-8", errors="ignore") as f:
+                content = f.read()[:200000]
+        except OSError:
+            content = None
+    _db_exec(
+        f"INSERT INTO u_{safe_user}.documents (filename, path, content) VALUES (%s, %s, %s)",
+        (os.path.basename(dest), dest, content),
+    )
     return dest
 
 
@@ -487,6 +549,32 @@ def _ensure_os_user(username: str) -> str | None:
                         hermes_bin, "config", "set", "model", model],
                        capture_output=True, text=True, check=False)
 
+    # standing instructions for this user's agent (loaded from cwd by hermes)
+    agents_md = f"""# Compliance cross-check agent
+
+Your user is a business owner / compliance officer. Your job:
+
+1. Cross-check the user's instruction manual against the applicable EU regulations.
+2. EU regulations live in the SHARED schema (readable by every user):
+   psql "$DATABASE_URL" -c "SELECT title FROM shared.regulations;"
+   Read the full texts, e.g.:
+   psql "$DATABASE_URL" -c "SELECT title, LEFT(content, 500) FROM shared.regulations WHERE title ILIKE '%lvd%';"
+3. The user's documents (instruction manual, contact info, uploads) are in YOUR schema:
+   psql "$DATABASE_URL" -c "SELECT id, filename, path, uploaded_at FROM {schema}.documents ORDER BY uploaded_at DESC;"
+   and as files in your home directory: /home/{osuser}/uploads/
+4. When checking a manual: identify the applicable regulations (GPSR, LVD 2014/35/EU,
+   PPWR, RoHS, WEEE, ...), then verify each required element: safety instructions and
+   warnings, CE marking / EU Declaration of Conformity references, language coverage,
+   manufacturer/importer identification, contact details, etc.
+5. If any required part is MISSING or unclear: ASK THE USER for that specific
+   information in the chat. Do NOT invent or guess it.
+6. Report findings as a clear checklist: ✅ present / ❌ missing / ⚠️ unclear, each
+   item citing the relevant regulation.
+"""
+    with open(os.path.join(home, "AGENTS.md"), "w", encoding="utf-8") as f:
+        f.write(agents_md)
+    subprocess.run(["chown", f"{osuser}:{osuser}", os.path.join(home, "AGENTS.md")], check=False)
+
     USER_OS[username] = osuser
     print(f"[chatbot] user {username}: isolated OS account {osuser} (home {home}, 0700)")
     return osuser
@@ -522,12 +610,14 @@ def _run_agent(chat_id: str, message: str, user: str = "") -> str:
             if os.environ.get(k):
                 agent_env[k] = os.environ[k]
         prefix = ["runuser", "-u", osuser, "--", "env"] + [f"{k}={v}" for k, v in agent_env.items()]
+        proc_cwd = f"/home/{osuser}"  # hermes loads AGENTS.md (standing instructions) from cwd
     else:
         prefix = None  # fallback: run as the container user (dev/testing)
+        proc_cwd = None
 
     proc = subprocess.run(
         (prefix + cmd) if prefix else cmd, capture_output=True, text=True, timeout=TIMEOUT,
-        env=run_env if prefix is None else None,
+        env=run_env if prefix is None else None, cwd=proc_cwd,
     )
 
     # Resume can fail (e.g. session lost after a container restart) — retry fresh
@@ -537,7 +627,7 @@ def _run_agent(chat_id: str, message: str, user: str = "") -> str:
         fresh = [os.path.abspath(HERMES), "chat", "-Q", "-q", message]
         proc = subprocess.run(
             (prefix + fresh) if prefix else fresh, capture_output=True, text=True,
-            timeout=TIMEOUT, env=run_env if prefix is None else None,
+            timeout=TIMEOUT, env=run_env if prefix is None else None, cwd=proc_cwd,
         )
 
     out = proc.stdout or ""

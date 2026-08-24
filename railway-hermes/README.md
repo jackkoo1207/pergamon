@@ -33,7 +33,17 @@ Bundle: `D:\Pergamon\railway-hermes\` + root `Dockerfile` / `railway.toml` (repo
    read, or write user B's home — verified against real Linux (WSL) in this repo's
    verification. (Same-container per-user accounts are the practical equivalent of
    per-user containers on Railway's single-service model.)
-9. Starts the surface:
+9. **Shared EU regulations**: `shared.regulations` (schema `shared`, PUBLIC read grant) is
+   seeded automatically at startup from the texts in `railway-hermes/regs/`
+   (PPWR 2025/40, LVD 2014/35/EU, Annex VII, Annex VIII) — every user's agent can read
+   them. **Per-user documents**: every upload is recorded in the user's own schema
+   (`u_<user>.documents`, with text content mirrored for txt/md/csv/json) — the manual
+   and Contact.md you upload later land there, visible only to that user's agent.
+10. **Compliance cross-check agent**: each user's home has an `AGENTS.md` (loaded by
+    hermes from cwd) that instructs the agent to: cross-check the user's manual against
+    the shared EU regulations, report a ✅/❌/⚠️ checklist citing each regulation, and
+    **ask the user for any missing part instead of guessing**.
+11. Starts the surface:
    | SURFACE | What you get |
    |---|---|
    | `chat` (default) | one-shot `hermes chat -q` — auto-prompt: *"connect to DATABASE_URL, list tables, summarize what's inside"* |

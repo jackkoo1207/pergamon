@@ -22,6 +22,10 @@ RUN apt-get update \
 # write-restricted; /opt/data is the image default and always writable).
 ENV SURFACE=chat
 
+# EU regulations seeded into the shared schema at startup (all users can read)
+COPY railway-hermes/regs /opt/regs
+ENV REG_SEED_DIR=/opt/regs
+
 COPY railway-hermes/entrypoint.sh /usr/local/bin/hermes-entrypoint
 COPY railway-hermes/chatbot.py /opt/hermes/chatbot.py
 RUN chmod +x /usr/local/bin/hermes-entrypoint
