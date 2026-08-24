@@ -72,7 +72,7 @@ fi
 case "$SURFACE" in
   dashboard) exec hermes dashboard --host 0.0.0.0 --port 3000 ;;
   proxy)     exec hermes proxy --host 0.0.0.0 --port 3000 ;;
-  chatbot)   exec /opt/hermes/.venv/bin/python /opt/hermes/chatbot.py ;;
+  chatbot)   exec /usr/bin/python3 /opt/hermes/chatbot.py ;;
   chat)
     if [ -n "${QUERY:-}" ]; then
       exec hermes chat -q "$QUERY"
