@@ -37,9 +37,11 @@ from flask import Flask, jsonify, render_template_string, request
 
 try:
     import psycopg2
+    from psycopg2 import sql as pgsql
     _PSYCOPG2 = True
 except Exception:
     psycopg2 = None
+    pgsql = None
     _PSYCOPG2 = False
 
 app = Flask(__name__)
@@ -84,7 +86,17 @@ CREATE TABLE IF NOT EXISTS hermes_messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_hermes_messages_chat ON hermes_messages (chat_id, created_at);
+CREATE TABLE IF NOT EXISTS hermes_users (
+    username      TEXT PRIMARY KEY,
+    schema_name   TEXT NOT NULL,
+    role_name     TEXT NOT NULL,
+    role_password TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
+
+# username -> restricted DATABASE_URL (per-user role); built at login
+USER_DB = {}
 
 PAGE = r"""<!doctype html>
 <html lang="en">
@@ -315,6 +327,66 @@ def _db_init() -> None:
         print("[chatbot] WARNING: PostgreSQL unavailable — session memory is in-memory only")
 
 
+def _restricted_url(username: str, role: str, password: str, schema: str) -> str:
+    """Swap the admin user/password for the per-user role in DATABASE_URL and
+    force its search_path to the user's own schema."""
+    from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+    u = urlparse(DB_URL)
+    qs = dict(parse_qsl(u.query))
+    qs["options"] = f"-c search_path={schema}"
+    return urlunparse((
+        u.scheme, f"{role}:{password}@{u.hostname}:{u.port or 5432}",
+        u.path, u.params, urlencode(qs), u.fragment,
+    ))
+
+
+def _ensure_user_db(username: str) -> str | None:
+    """Provision schema u_<user> + restricted role; return the user's
+    DATABASE_URL (agent-only, scoped to their own schema) or None if DB is
+    unavailable. Idempotent — safe to call on every login."""
+    if not DB_URL or not _PSYCOPG2:
+        return None
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", username)
+    schema = f"u_{safe}"
+    role = f"u_{safe}"
+
+    # existing password (keep stable across logins) or create one
+    row = _db_query("SELECT role_password FROM hermes_users WHERE username = %s", (username,))
+    password = row[0][0] if row else secrets.token_urlsafe(24)
+
+    conn = _db_connect()
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                pgsql.SQL("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = %s) THEN CREATE ROLE {} LOGIN PASSWORD %s; END IF; END $$;")
+                .format(pgsql.Identifier(role)), (role, password))
+            cur.execute(pgsql.SQL("CREATE SCHEMA IF NOT EXISTS {} AUTHORIZATION {}")
+                        .format(pgsql.Identifier(schema), pgsql.Identifier(role)))
+            cur.execute(pgsql.SQL("GRANT USAGE, CREATE ON SCHEMA {} TO {}")
+                        .format(pgsql.Identifier(schema), pgsql.Identifier(role)))
+            cur.execute(pgsql.SQL("REVOKE ALL ON SCHEMA public FROM {}")
+                        .format(pgsql.Identifier(role)))
+            cur.execute(pgsql.SQL("ALTER ROLE {} SET search_path TO {}")
+                        .format(pgsql.Identifier(role), pgsql.Identifier(schema)))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[chatbot] WARNING: could not provision user db for {username}: {e}")
+        return None
+
+    _db_exec(
+        "INSERT INTO hermes_users (username, schema_name, role_name, role_password) "
+        "VALUES (%s, %s, %s, %s) ON CONFLICT (username) DO UPDATE SET role_password = EXCLUDED.role_password",
+        (username, schema, role, password),
+    )
+    url = _restricted_url(username, role, password, schema)
+    USER_DB[username] = url
+    print(f"[chatbot] user {username}: schema {schema} ready (restricted role {role})")
+    return url
+
+
 def _db_load_sessions() -> None:
     for chat_id, sid in _db_query("SELECT chat_id, hermes_session_id FROM hermes_chats"):
         _remember(chat_id, sid, persist=False)
@@ -366,8 +438,16 @@ def _remember(chat_id: str, session_id: str, persist: bool = True) -> None:
         _db_save_session(chat_id, session_id)
 
 
-def _run_agent(chat_id: str, message: str) -> str:
-    """Run one full agent turn, resuming the chat's session when one exists."""
+def _run_agent(chat_id: str, message: str, user: str = "") -> str:
+    """Run one full agent turn, resuming the chat's session when one exists.
+    The agent's DATABASE_URL is the user's RESTRICTED url (own schema only)."""
+    run_env = dict(os.environ, HERMES_HOME=os.environ.get("HERMES_HOME", "/opt/data"))
+    restricted = USER_DB.get(user)
+    if restricted:
+        run_env["DATABASE_URL"] = restricted  # per-user role: cannot see other users' data
+    elif user:
+        run_env.pop("DATABASE_URL", None)  # never hand the admin URL to the agent
+
     sid = SESSIONS.get(chat_id)
     cmd = [HERMES, "chat", "-Q"]
     if sid:
@@ -375,8 +455,7 @@ def _run_agent(chat_id: str, message: str) -> str:
     cmd += ["-q", message]
 
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=TIMEOUT,
-        env=dict(os.environ, HERMES_HOME=os.environ.get("HERMES_HOME", "/opt/data")),
+        cmd, capture_output=True, text=True, timeout=TIMEOUT, env=run_env,
     )
 
     # Resume can fail (e.g. session lost after a container restart) — retry fresh
@@ -385,8 +464,7 @@ def _run_agent(chat_id: str, message: str) -> str:
         _db_exec("DELETE FROM hermes_chats WHERE chat_id = %s", (chat_id,))
         proc = subprocess.run(
             [HERMES, "chat", "-Q", "-q", message], capture_output=True, text=True,
-            timeout=TIMEOUT,
-            env=dict(os.environ, HERMES_HOME=os.environ.get("HERMES_HOME", "/opt/data")),
+            timeout=TIMEOUT, env=run_env,
         )
 
     out = proc.stdout or ""
@@ -419,6 +497,7 @@ def login():
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
     if username in USERS and secrets.compare_digest(USERS[username], password):
+        _ensure_user_db(username)  # provision + cache restricted URL (best-effort)
         return jsonify(token=_issue_token(username), user=username)
     return jsonify(error="unauthorized"), 401
 
@@ -456,7 +535,7 @@ def chat():
     with _lock:  # one agent process at a time (prototype-grade)
         started = time.time()
         try:
-            reply = _run_agent(chat_id, message)
+            reply = _run_agent(chat_id, message, user)
         except subprocess.TimeoutExpired:
             return jsonify(error=f"agent timed out after {TIMEOUT}s"), 504
     _db_log_message(chat_id, "agent", reply)

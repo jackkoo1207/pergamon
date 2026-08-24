@@ -19,7 +19,14 @@ Bundle: `D:\Pergamon\railway-hermes\` + root `Dockerfile` / `railway.toml` (repo
    ("user:pass,user2:pass2"; default `test:123456`). Login issues a TTL-limited token
    (`CHATBOT_TOKEN_TTL_HOURS`, default 24h). All state is user-scoped: hermes sessions,
    chat history and uploads are namespaced per user — users can't see each other's data.
-7. Starts the surface:
+7. **Database security (per-user DB access)**: on first login each user gets a dedicated
+   Postgres schema `u_<user>` + restricted role (`u_<user>`, random password, stored in
+   `hermes_users`). The agent's `DATABASE_URL` is swapped for the user's restricted one
+   (with `search_path` forced to their own schema), and the role is revoked from the
+   `public` schema — so even if a user asks the agent to read other users' data, the
+   **database itself refuses** (permission denied). If the DB is unavailable the agent
+   gets NO `DATABASE_URL` at all — the admin URL is never handed to the agent.
+8. Starts the surface:
    | SURFACE | What you get |
    |---|---|
    | `chat` (default) | one-shot `hermes chat -q` — auto-prompt: *"connect to DATABASE_URL, list tables, summarize what's inside"* |
