@@ -9,8 +9,8 @@ FROM nousresearch/hermes-agent:latest
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client \
-    && rm -rf /var/lib/apt/lists/* \
-    && /opt/hermes/.venv/bin/pip install --no-cache-dir flask
+    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip install --no-cache-dir flask
 
 # HERMES_HOME is decided at runtime by entrypoint.sh (Railway volumes may be
 # write-restricted; /opt/data is the image default and always writable).
