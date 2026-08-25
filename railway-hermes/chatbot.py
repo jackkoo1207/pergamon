@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS hermes_users (
     role_password TEXT NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state      TEXT PRIMARY KEY,
+    username   TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 # Shared (all-user) EU-regulation store. PUBLIC grants = every user's agent can
@@ -684,6 +689,9 @@ def _oauth_consent_url(username: str) -> str:
     state = secrets.token_urlsafe(16)
     with _OAUTH_STATES_LOCK:
         _OAUTH_STATES[state] = {"user": username, "created": time.time()}
+    # persist so an app restart mid-flow doesn't invalidate the consent
+    _db_exec("INSERT INTO oauth_states (state, username) VALUES (%s, %s) "
+             "ON CONFLICT (state) DO NOTHING", (state, username))
     params = {
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": OAUTH_REDIRECT,
@@ -846,18 +854,29 @@ def oauth2callback():
     state = request.args.get("state", "")
     err = request.args.get("error", "")
     err_desc = request.args.get("error_description", "")
-    with _OAUTH_STATES_LOCK:
-        entry = _OAUTH_STATES.pop(state, None)
     if err:
         print(f"[chatbot] oauth rejected by Google: {err} {err_desc}")
         return jsonify(error=f"oauth failed: google error={err} {err_desc}".strip()), 400
-    if not entry:
-        print(f"[chatbot] oauth state not found (app restarted mid-flow? stale consent URL?) state={state[:8]}…")
-        return jsonify(error="oauth failed: state not found (consent window too old, or the app restarted) — click ✉️ again"), 400
+
+    # state lookup: in-memory first, then DB (survives app restarts)
+    with _OAUTH_STATES_LOCK:
+        entry = _OAUTH_STATES.pop(state, None)
+    username = None
+    if entry:
+        username = entry["user"]
+    else:
+        rows = _db_query("SELECT username, created_at FROM oauth_states WHERE state = %s", (state,))
+        _db_exec("DELETE FROM oauth_states WHERE state = %s", (state,))
+        if rows:
+            age = time.time() - rows[0][1].timestamp()
+            if age > 600:
+                return jsonify(error="oauth state expired — click ✉️ again"), 400
+            username = rows[0][0]
+    if not username:
+        print(f"[chatbot] oauth state not found (stale consent URL?) state={state[:8]}…")
+        return jsonify(error="oauth failed: state not found (consent window too old) — click ✉️ again"), 400
     if not code:
         return jsonify(error="oauth failed: no authorization code"), 400
-    if time.time() - entry["created"] > 600:
-        return jsonify(error="oauth state expired — click ✉️ again"), 400
 
     import urllib.parse
     data = urllib.parse.urlencode({
