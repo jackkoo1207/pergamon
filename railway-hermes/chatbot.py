@@ -812,8 +812,8 @@ def chat():
     if user is None:
         return jsonify(error="unauthorized"), 401
 
-    # multipart (file upload) or JSON
-    if request.files:
+    # multipart (file upload or plain form from the chat UI) or JSON
+    if request.mimetype == "multipart/form-data" or request.files:
         message = (request.form.get("message") or "").strip()
         client_chat_id = (request.form.get("chat_id") or "default")[:64]
         f = request.files.get("file")
