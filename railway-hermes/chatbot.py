@@ -234,7 +234,16 @@ async function refreshGmail() {
     const d = await api('/api/gmail/status', null, false);
     el.textContent = d.connected ? 'connected' : 'connect';
     el.style.color = d.connected ? '#4ade80' : '';
-  } catch (e) { el.textContent = '…'; }
+  } catch (e) {
+    if (e.message === 'unauthorized') { // stale token after a server restart
+      TOKEN = ''; USER = '';
+      localStorage.removeItem('hermes_token');
+      localStorage.removeItem('hermes_user');
+      showLogin();
+    } else {
+      el.textContent = '…';
+    }
+  }
 }
 document.getElementById('gmail').addEventListener('click', async () => {
   try {

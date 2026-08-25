@@ -1,7 +1,17 @@
-# Pergamon Research
+# SmartReviewAgent - An agent that guides you to make a technical documentation that fulfill the EU regulations
+<div style="display: flex; justify-content: center;">
+  <img src="image.png" alt="alt text">
+</div>
 
-Company/product due-diligence notes and EU compliance reference material.
-
+## Database design
+| Shared DB ||
+|-----------|-------------------|
+| Shipping regulation |
+| **User A DB** | **User B DB** |
+| 1. User sessions | 1. Setting up toaster documentation |
+| 2. Agent memory |2. What user trying to do |
+| 3. User uploaded document |3. HBM machine draft |
+| 4. Contact email |4. hr@hbm.com |
 ## Contents
 
 - `Investigation.md` — company evaluation of Pergamon Labs (client reach, founders, core technical skills, replaceability analysis) using the mentor's company-vetting framework
