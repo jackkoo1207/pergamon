@@ -845,12 +845,19 @@ def oauth2callback():
     code = request.args.get("code", "")
     state = request.args.get("state", "")
     err = request.args.get("error", "")
+    err_desc = request.args.get("error_description", "")
     with _OAUTH_STATES_LOCK:
         entry = _OAUTH_STATES.pop(state, None)
-    if err or not entry or not code:
-        return jsonify(error="oauth failed"), 400
+    if err:
+        print(f"[chatbot] oauth rejected by Google: {err} {err_desc}")
+        return jsonify(error=f"oauth failed: google error={err} {err_desc}".strip()), 400
+    if not entry:
+        print(f"[chatbot] oauth state not found (app restarted mid-flow? stale consent URL?) state={state[:8]}…")
+        return jsonify(error="oauth failed: state not found (consent window too old, or the app restarted) — click ✉️ again"), 400
+    if not code:
+        return jsonify(error="oauth failed: no authorization code"), 400
     if time.time() - entry["created"] > 600:
-        return jsonify(error="oauth state expired"), 400
+        return jsonify(error="oauth state expired — click ✉️ again"), 400
 
     import urllib.parse
     data = urllib.parse.urlencode({
