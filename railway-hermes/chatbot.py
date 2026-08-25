@@ -54,7 +54,7 @@ app = Flask(__name__)
 _lock = threading.Lock()
 
 HERMES = os.environ.get("HERMES_BIN") or shutil.which("hermes") or "/opt/hermes/.venv/bin/hermes"
-TIMEOUT = int(os.environ.get("CHATBOT_TIMEOUT", "180"))
+TIMEOUT = int(os.environ.get("CHATBOT_TIMEOUT", "600"))  # seconds per agent run (heavy docs take a while)
 DB_URL = os.environ.get("DATABASE_URL", "")
 MAX_UPLOAD_MB = int(os.environ.get("CHATBOT_MAX_UPLOAD_MB", "20"))
 UPLOAD_ROOT = os.path.join(os.environ.get("HERMES_HOME", "/opt/data"), "uploads")
