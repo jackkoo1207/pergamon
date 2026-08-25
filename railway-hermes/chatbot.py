@@ -746,8 +746,8 @@ ONBOARD_TEXT = (
     "• I will help you to review it and check if it satisfies the EU regulations.\n"
     "• If you have any uncertainty about some details, you can send me the Gmail "
     "of your technical team and I will email them for you.\n"
-    "• Connect your own Gmail with the ✉️ button if you want me to send emails "
-    "on your behalf.\n\n"
+    "• If you want me to send emails on your behalf, click the green ✉️ Gmail "
+    "connected button in the Connectors panel.\n\n"
     "Upload your document now to get started!"
 )
 
@@ -762,6 +762,22 @@ def onboard():
     chat_id = f"{user}:{client_id}"
     _db_log_message(chat_id, "agent", ONBOARD_TEXT)
     return jsonify(reply=ONBOARD_TEXT)
+
+
+@app.post("/api/sessions/delete")
+def session_delete():
+    user = _auth_user()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    client_id = (data.get("chat_id") or "")[:64]
+    if not client_id:
+        return jsonify(error="missing chat_id"), 400
+    chat_id = f"{user}:{client_id}"
+    with _lock:
+        SESSIONS.pop(chat_id, None)
+    _db_exec("DELETE FROM hermes_messages WHERE chat_id = %s", (chat_id,))
+    return jsonify(ok=True)
 
 
 @app.get("/api/sessions")

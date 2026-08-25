@@ -19,6 +19,10 @@
   aside .sess { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; color: #d1d5db; padding: 8px 10px; border-radius: 6px; margin: 2px 0; cursor: pointer; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   aside .sess:hover { background: #1f2937; }
   aside .sess.active { background: #1d4ed8; color: white; }
+  .sesswrap { display: flex; align-items: center; }
+  .sesswrap .sess { flex: 1; min-width: 0; }
+  .sess-x { background: none; border: 0; color: #6b7280; cursor: pointer; font-size: .9rem; padding: 4px 8px; border-radius: 6px; }
+  .sess-x:hover { color: #f87171; background: #1f2937; }
   aside .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: .85rem; padding: 6px 4px; color: #d1d5db; }
   aside .conn-btn { background: #374151; border: 0; color: #d1d5db; padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: .78rem; }
   aside .conn-btn.connected { background: #14532d; color: #4ade80; }
@@ -120,12 +124,34 @@ function renderSessions() {
   const el = document.getElementById('sessionlist');
   el.innerHTML = '';
   sessions.forEach(s => {
+    const wrap = document.createElement('div');
+    wrap.className = 'sesswrap';
     const b = document.createElement('button');
     b.className = 'sess' + (s.id === currentChat ? ' active' : '');
     b.textContent = s.title || 'Session';
     b.title = s.id;
     b.onclick = () => switchSession(s.id);
-    el.appendChild(b);
+    wrap.appendChild(b);
+    const x = document.createElement('button');
+    x.className = 'sess-x';
+    x.textContent = '×';
+    x.title = 'Delete session';
+    x.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm('Delete this session?')) return;
+      try {
+        await api('/api/sessions/delete', {chat_id: s.id}, false);
+      } catch (e) { /* keep local removal even if DB is down */ }
+      sessions = sessions.filter(y => y.id !== s.id);
+      saveSessions();
+      renderSessions();
+      if (currentChat === s.id) {
+        if (sessions.length) switchSession(sessions[0].id);
+        else newSession();
+      }
+    };
+    wrap.appendChild(x);
+    el.appendChild(wrap);
   });
 }
 
