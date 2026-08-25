@@ -16,3 +16,6 @@ Desktop.ini
 
 # git
 *.orig
+
+# user's local screenshots
+image.png
