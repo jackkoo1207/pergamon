@@ -905,9 +905,13 @@ def oauth2callback():
             timeout=20,
         ) as resp:
             tok = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore")[:300]
+        print(f"[chatbot] oauth token exchange failed: HTTP {e.code} {detail}")
+        return jsonify(error=f"token exchange failed: HTTP {e.code} {detail}"), 502
     except Exception as e:
         print(f"[chatbot] oauth token exchange failed: {e}")
-        return jsonify(error="token exchange failed"), 502
+        return jsonify(error=f"token exchange failed: {e}"), 502
     refresh = tok.get("refresh_token")
     if not refresh:
         return jsonify(error="no refresh token returned"), 400
