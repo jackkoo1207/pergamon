@@ -3,6 +3,9 @@ b4be0e.pdf
 b4be0e_text.txt
 HBM_MIG200_EU_DoC.txt
 
+# Google OAuth client secrets — NEVER commit (public repo)
+client_secret_*.json
+
 # OS / editor junk
 Thumbs.db
 Desktop.ini
