@@ -286,7 +286,21 @@ document.getElementById('form').addEventListener('submit', async (e) => {
     const r = await fetch('/api/chat', {method: 'POST', headers, body: fd});
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || r.status);
-    document.querySelector('.msg.bot:last-of-type').textContent = d.reply;
+    // poll for the agent result (long runs exceed the proxy timeout)
+    const bubble = document.querySelector('.msg.bot:last-of-type');
+    let got = false;
+    for (let i = 0; i < 200 && !got; i++) {
+      await new Promise(res => setTimeout(res, 2500));
+      const q = await apiGet('/api/chat/result?chat_id=' + encodeURIComponent(currentChat || 'default')).catch(() => null);
+      if (!q || (q.status !== 'done' && q.status !== 'error')) {
+        if (i % 8 === 7) bubble.textContent = '… (still working)';
+        continue;
+      }
+      bubble.textContent = q.reply;
+      if (q.status === 'error') bubble.className = 'msg err';
+      got = true;
+    }
+    if (!got) bubble.textContent = '… (taking very long — check back shortly)';
     const s = sessions.find(x => x.id === currentChat);
     if (s && (s.title === 'Session')) {
       s.title = text.slice(0, 30) || '(file)';

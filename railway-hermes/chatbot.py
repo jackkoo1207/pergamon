@@ -617,6 +617,39 @@ def login():
     return jsonify(error="unauthorized"), 401
 
 
+_JOBS = {}            # chat_id -> {status, reply, ts}
+_JOBS_LOCK = threading.Lock()
+
+
+def _job_worker(chat_id: str, message: str, user: str) -> None:
+    try:
+        with _lock:  # one agent process at a time
+            reply = _run_agent(chat_id, message, user)
+        _db_log_message(chat_id, "agent", reply)
+        with _JOBS_LOCK:
+            _JOBS[chat_id] = {"status": "done", "reply": reply, "ts": time.time()}
+    except subprocess.TimeoutExpired:
+        with _JOBS_LOCK:
+            _JOBS[chat_id] = {"status": "error", "reply": f"agent timed out after {TIMEOUT}s", "ts": time.time()}
+    except Exception as e:
+        with _JOBS_LOCK:
+            _JOBS[chat_id] = {"status": "error", "reply": f"agent error: {e}", "ts": time.time()}
+
+
+@app.get("/api/chat/result")
+def chat_result():
+    user = _auth_user()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    client_id = (request.args.get("chat_id") or "default")[:64]
+    chat_id = f"{user}:{client_id}"
+    with _JOBS_LOCK:
+        job = _JOBS.get(chat_id)
+    if job is None:
+        return jsonify(status="unknown")
+    return jsonify(status=job["status"], reply=job.get("reply", ""), ts=job["ts"])
+
+
 @app.post("/api/chat")
 def chat():
     user = _auth_user()
@@ -647,14 +680,11 @@ def chat():
     chat_id = f"{user}:{client_chat_id}"
 
     _db_log_message(chat_id, "user", message)
-    with _lock:  # one agent process at a time (prototype-grade)
-        started = time.time()
-        try:
-            reply = _run_agent(chat_id, message, user)
-        except subprocess.TimeoutExpired:
-            return jsonify(error=f"agent timed out after {TIMEOUT}s"), 504
-    _db_log_message(chat_id, "agent", reply)
-    return jsonify(reply=reply, elapsed=round(time.time() - started, 1))
+    with _JOBS_LOCK:
+        _JOBS[chat_id] = {"status": "running", "ts": time.time()}
+    # async: return immediately; the client polls /api/chat/result
+    threading.Thread(target=_job_worker, args=(chat_id, message, user), daemon=True).start()
+    return jsonify(accepted=True, chat_id=client_chat_id)
 
 
 def _gmail_access_token(username: str) -> str | None:
