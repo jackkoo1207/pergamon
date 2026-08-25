@@ -28,5 +28,5 @@ __pycache__/
 *.pyc
 
 # manual files (third-party copyright)
-manual.pdf
-manual1.pdf
+manual*.pdf
+manual*.pdf
