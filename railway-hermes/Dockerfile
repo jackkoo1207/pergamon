@@ -31,6 +31,7 @@ ENV REG_SEED_DIR=/opt/regs
 # Config + secrets are injected at runtime from Railway env vars
 COPY entrypoint.sh /usr/local/bin/hermes-entrypoint
 COPY chatbot.py /opt/hermes/chatbot.py
+COPY gmail_token.py /opt/hermes/gmail_token.py
 RUN chmod +x /usr/local/bin/hermes-entrypoint
 
 EXPOSE 3000

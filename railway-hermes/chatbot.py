@@ -33,7 +33,7 @@ import subprocess
 import threading
 import time
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, redirect, render_template_string, request
 
 try:
     import psycopg2
@@ -159,7 +159,9 @@ PAGE = r"""<!doctype html>
   </form>
 </div>
 <div id="chat" style="display:none">
-  <div id="topbar"><h1>Hermes <span class="hint">(agentic · tools · multi-turn · Postgres)</span></h1><button id="logout">Log out</button></div>
+  <div id="topbar"><h1>Hermes <span class="hint">(agentic · tools · multi-turn · Postgres)</span></h1>
+    <span><button id="gmail" title="Connect your Gmail so the agent can read/send your mail">✉️ <span id="gmailstate">…</span></button> <button id="logout">Log out</button></span>
+  </div>
   <div id="messages"></div>
   <form id="form">
     <input type="text" id="msg" placeholder="Ask anything… (or attach a file)" autocomplete="off">
@@ -219,6 +221,34 @@ document.getElementById('logout').addEventListener('click', () => {
   showLogin();
 });
 
+async function refreshGmail() {
+  const el = document.getElementById('gmailstate');
+  try {
+    const d = await api('/api/gmail/status', null, false);
+    el.textContent = d.connected ? 'connected' : 'connect';
+    el.style.color = d.connected ? '#4ade80' : '';
+  } catch (e) { el.textContent = '…'; }
+}
+document.getElementById('gmail').addEventListener('click', async () => {
+  try {
+    const d = await api('/api/gmail/auth-url', null, false);
+    window.open(d.url, '_blank');
+    // poll until the user finishes the consent flow
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      const s = await api('/api/gmail/status', null, false);
+      if (s.connected) { refreshGmail(); break; }
+    }
+  } catch (e) { alert(e.message); }
+});
+function onLoadGmail() {
+  refreshGmail();
+  if (location.search.includes('gmail_connected')) {
+    history.replaceState(null, '', '/');
+    refreshGmail();
+  }
+}
+
 document.getElementById('file').addEventListener('change', (e) => {
   const f = e.target.files[0];
   if (!f) { attached = null; document.getElementById('filelabel').textContent = '📎'; return; }
@@ -268,7 +298,7 @@ document.getElementById('form').addEventListener('submit', async (e) => {
   input.focus();
 });
 
-if (TOKEN && USER) showChat(); else showLogin();
+if (TOKEN && USER) { showChat(); onLoadGmail(); } else showLogin();
 </script>
 </body>
 </html>"""
@@ -424,6 +454,13 @@ def _ensure_user_db(username: str) -> str | None:
             ).format(pgsql.Identifier(schema)))
             cur.execute(pgsql.SQL("GRANT ALL ON {}.documents TO {}")
                         .format(pgsql.Identifier(schema), pgsql.Identifier(role)))
+            cur.execute(pgsql.SQL(
+                "CREATE TABLE IF NOT EXISTS {}.credentials ("
+                " service TEXT PRIMARY KEY, payload TEXT NOT NULL, "
+                " updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            ).format(pgsql.Identifier(schema)))
+            cur.execute(pgsql.SQL("GRANT ALL ON {}.credentials TO {}")
+                        .format(pgsql.Identifier(schema), pgsql.Identifier(role)))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -570,6 +607,13 @@ Your user is a business owner / compliance officer. Your job:
    information in the chat. Do NOT invent or guess it.
 6. Report findings as a clear checklist: ✅ present / ❌ missing / ⚠️ unclear, each
    item citing the relevant regulation.
+7. Gmail: if the user connected Gmail (✉️ button in the UI), you may read and send
+   THIS user's own mail only:
+     ACCESS=$(python3 /opt/hermes/gmail_token.py)
+     curl -H "Authorization: Bearer $ACCESS" "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5"
+     curl -H "Authorization: Bearer $ACCESS" "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}"
+   To send: POST /gmail/v1/users/me/messages with {"raw": "<base64url of RFC822 message>"}.
+   Never access any other mailbox.
 """
     with open(os.path.join(home, "AGENTS.md"), "w", encoding="utf-8") as f:
         f.write(agents_md)
@@ -578,6 +622,78 @@ Your user is a business owner / compliance officer. Your job:
     USER_OS[username] = osuser
     print(f"[chatbot] user {username}: isolated OS account {osuser} (home {home}, 0700)")
     return osuser
+
+
+# ---------------------------------------------------------------- Gmail OAuth
+# One app-level OAuth client (your Google Cloud "Web application" client) serves
+# ALL users: each user authorizes their OWN Gmail via the consent screen and gets
+# their OWN refresh token, stored in their own schema. Users never handle clients.
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+OAUTH_REDIRECT = os.environ.get("OAUTH_REDIRECT_URI", "").rstrip("/") or \
+    f"https://{os.environ.get('PUBLIC_HOST', 'pergamon-production.up.railway.app')}/oauth2callback"
+GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+
+# one-time state -> username for the OAuth round-trip (expires in 10 min)
+_OAUTH_STATES = {}
+_OAUTH_STATES_LOCK = threading.Lock()
+
+
+def _gmail_ready(username: str) -> bool:
+    """Does this user already have a Gmail refresh token in their own schema?"""
+    if not _PSYCOPG2:
+        return False
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", username)
+    try:
+        return bool(_db_query(
+            f"SELECT 1 FROM u_{safe}.credentials WHERE service = 'gmail'"))
+    except Exception:
+        return False
+
+
+def _gmail_token_store(username: str, refresh_token: str) -> None:
+    """Persist the user's refresh token into their own schema + their .env
+    (chowned to their OS account so their agent can use it)."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", username)
+    _db_exec(
+        f"INSERT INTO u_{safe}.credentials (service, payload) VALUES ('gmail', %s) "
+        "ON CONFLICT (service) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()",
+        (refresh_token,),
+    )
+    osuser = USER_OS.get(username)
+    if osuser:
+        env_path = f"/home/{osuser}/hermes/.env"
+        try:
+            lines = []
+            if os.path.exists(env_path):
+                with open(env_path, encoding="utf-8") as f:
+                    lines = [l for l in f.read().splitlines()
+                             if l and not l.startswith(("GOOGLE_REFRESH_TOKEN", "GOOGLE_OAUTH_CLIENT"))]
+            lines += [f"GOOGLE_REFRESH_TOKEN={refresh_token}",
+                      f"GOOGLE_OAUTH_CLIENT_ID={GOOGLE_CLIENT_ID}",
+                      f"GOOGLE_OAUTH_CLIENT_SECRET={GOOGLE_CLIENT_SECRET}"]
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            subprocess.run(["chown", f"{osuser}:{osuser}", env_path], check=False)
+        except OSError as e:
+            print(f"[chatbot] WARNING: could not write gmail env for {username}: {e}")
+
+
+def _oauth_consent_url(username: str) -> str:
+    import urllib.parse
+    state = secrets.token_urlsafe(16)
+    with _OAUTH_STATES_LOCK:
+        _OAUTH_STATES[state] = {"user": username, "created": time.time()}
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": OAUTH_REDIRECT,
+        "response_type": "code",
+        "scope": GMAIL_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    return "https://accounts.google.com/o/oauth2/auth?" + urllib.parse.urlencode(params)
 
 
 def _run_agent(chat_id: str, message: str, user: str = "") -> str:
@@ -704,6 +820,62 @@ def chat():
             return jsonify(error=f"agent timed out after {TIMEOUT}s"), 504
     _db_log_message(chat_id, "agent", reply)
     return jsonify(reply=reply, elapsed=round(time.time() - started, 1))
+
+
+@app.post("/api/gmail/auth-url")
+def gmail_auth_url():
+    user = _auth_user()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return jsonify(error="Gmail OAuth is not configured on the server yet (missing GOOGLE_OAUTH_CLIENT_ID/SECRET)"), 503
+    return jsonify(url=_oauth_consent_url(user), redirect_uri=OAUTH_REDIRECT)
+
+
+@app.get("/api/gmail/status")
+def gmail_status():
+    user = _auth_user()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    return jsonify(connected=_gmail_ready(user))
+
+
+@app.get("/oauth2callback")
+def oauth2callback():
+    code = request.args.get("code", "")
+    state = request.args.get("state", "")
+    err = request.args.get("error", "")
+    with _OAUTH_STATES_LOCK:
+        entry = _OAUTH_STATES.pop(state, None)
+    if err or not entry or not code:
+        return jsonify(error="oauth failed"), 400
+    if time.time() - entry["created"] > 600:
+        return jsonify(error="oauth state expired"), 400
+
+    import urllib.parse
+    data = urllib.parse.urlencode({
+        "code": code,
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": OAUTH_REDIRECT,
+        "grant_type": "authorization_code",
+    }).encode()
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request("https://oauth2.googleapis.com/token", data=data,
+                                   headers={"Content-Type": "application/x-www-form-urlencoded"}),
+            timeout=20,
+        ) as resp:
+            tok = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"[chatbot] oauth token exchange failed: {e}")
+        return jsonify(error="token exchange failed"), 502
+    refresh = tok.get("refresh_token")
+    if not refresh:
+        return jsonify(error="no refresh token returned"), 400
+    _gmail_token_store(entry["user"], refresh)
+    print(f"[chatbot] gmail connected for user {entry['user']}")
+    return redirect("/?gmail_connected=1")
 
 
 if __name__ == "__main__":
