@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hermes Chat</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #0f1115; color: #e6e6e6; display: flex; height: 100vh; }
+  #login { max-width: 320px; margin: 20vh auto 0; width: 100%; }
+  #login h1 { font-size: 1.2rem; }
+  #login form { display: flex; flex-direction: column; gap: 8px; }
+  #login input { padding: 10px; border-radius: 8px; border: 1px solid #374151; background: #111827; color: #e6e6e6; }
+  #login button, #send { padding: 10px 16px; border-radius: 8px; border: 0; background: #2563eb; color: white; cursor: pointer; }
+  #loginerr { color: #f87171; font-size: .85rem; min-height: 1.2em; }
+  #chat { display: none; flex: 1; min-width: 0; }
+  aside { width: 250px; background: #111827; border-right: 1px solid #1f2937; padding: 12px; overflow-y: auto; flex-shrink: 0; }
+  aside h2 { font-size: .72rem; text-transform: uppercase; color: #9ca3af; margin: 16px 0 6px; letter-spacing: .06em; }
+  aside .sess { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; color: #d1d5db; padding: 8px 10px; border-radius: 6px; margin: 2px 0; cursor: pointer; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  aside .sess:hover { background: #1f2937; }
+  aside .sess.active { background: #1d4ed8; color: white; }
+  aside .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: .85rem; padding: 6px 4px; color: #d1d5db; }
+  aside .conn-btn { background: #374151; border: 0; color: #d1d5db; padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: .78rem; }
+  aside .conn-btn.connected { background: #14532d; color: #4ade80; }
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid #1f2937; }
+  #topbar h1 { font-size: 1.05rem; margin: 0; }
+  #logout { background: #374151; border: 0; color: #d1d5db; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  #messages { flex: 1; overflow-y: auto; padding: 16px; }
+  .msg { margin: 10px 0; padding: 10px 14px; border-radius: 10px; white-space: pre-wrap; max-width: 85%; }
+  .user { background: #1d4ed8; margin-left: auto; }
+  .bot { background: #1f2937; margin-right: auto; }
+  .err { background: #7f1d1d; margin-right: auto; }
+  .hint { color: #9ca3af; font-size: .8rem; }
+  form { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid #1f2937; }
+  input[type=text] { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #374151; background: #111827; color: #e6e6e6; }
+  #filelabel { cursor: pointer; align-self: center; font-size: 1.2rem; }
+  #file { display: none; }
+  button:disabled { opacity: .5; }
+</style>
+</head>
+<body>
+<div id="login" style="display:none">
+  <h1>Hermes Chat <span class="hint">(sign in)</span></h1>
+  <form id="loginform">
+    <input type="text" id="username" placeholder="Username" autocomplete="username">
+    <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+    <button type="submit">Sign in</button>
+    <div id="loginerr"></div>
+  </form>
+</div>
+<div id="chat">
+  <aside>
+    <h2>Sessions</h2>
+    <div id="sessionlist"></div>
+    <button class="sess" id="newsess" style="border:1px dashed #374151; color:#9ca3af;">+ New session</button>
+    <h2>Skills</h2>
+    <div class="row">✅ Compliance cross-check</div>
+    <div class="row">📄 Document analysis</div>
+    <h2>Tools</h2>
+    <div class="row">🗄️ Database — read/write</div>
+    <div class="row">📎 File upload</div>
+    <div class="row">🧠 Multi-turn memory</div>
+    <h2>Connectors</h2>
+    <div class="row">✉️ Gmail <button class="conn-btn" id="gmail"><span id="gmailstate">…</span></button></div>
+  </aside>
+  <main>
+    <div id="topbar"><h1>Hermes <span class="hint">(agentic · tools · multi-turn · Postgres)</span></h1><button id="logout">Log out</button></div>
+    <div id="messages"></div>
+    <form id="form">
+      <input type="text" id="msg" placeholder="Ask anything… (or attach a file)" autocomplete="off">
+      <label id="filelabel" for="file" title="Attach a file">📎</label>
+      <input type="file" id="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.csv,.md,.json,.rtf,.odt,.ods" hidden>
+      <button id="send" type="submit">Send</button>
+    </form>
+  </main>
+</div>
+<script>
+let TOKEN = localStorage.getItem('hermes_token') || '';
+let USER = localStorage.getItem('hermes_user') || '';
+let attached = null;
+let currentChat = null;
+let sessions = [];
+
+function saveSessions() { localStorage.setItem('hermes_sessions:' + USER, JSON.stringify(sessions)); }
+function loadSessions() { try { sessions = JSON.parse(localStorage.getItem('hermes_sessions:' + USER) || '[]'); } catch (e) { sessions = []; } }
+
+function showChat() { document.getElementById('login').style.display = 'none'; document.getElementById('chat').style.display = 'flex'; }
+function showLogin() { document.getElementById('login').style.display = 'block'; document.getElementById('chat').style.display = 'none'; }
+
+async function api(path, body, isForm) {
+  const headers = {};
+  if (TOKEN) headers['X-Chatbot-Token'] = TOKEN;
+  let payload = body;
+  if (!isForm && body) { headers['Content-Type'] = 'application/json'; payload = JSON.stringify(body); }
+  const r = await fetch(path, {method: 'POST', headers, body: payload});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.status);
+  return d;
+}
+async function apiGet(path) {
+  const headers = {};
+  if (TOKEN) headers['X-Chatbot-Token'] = TOKEN;
+  const r = await fetch(path, {headers});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.status);
+  return d;
+}
+
+function add(role, text) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + role;
+  el.textContent = text;
+  const box = document.getElementById('messages');
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderSessions() {
+  const el = document.getElementById('sessionlist');
+  el.innerHTML = '';
+  sessions.forEach(s => {
+    const b = document.createElement('button');
+    b.className = 'sess' + (s.id === currentChat ? ' active' : '');
+    b.textContent = s.title || 'Session';
+    b.title = s.id;
+    b.onclick = () => switchSession(s.id);
+    el.appendChild(b);
+  });
+}
+
+async function switchSession(id) {
+  currentChat = id;
+  renderSessions();
+  const box = document.getElementById('messages');
+  box.innerHTML = '';
+  try {
+    const d = await apiGet('/api/messages?chat_id=' + encodeURIComponent(id));
+    const msgs = d.messages || [];
+    if (!msgs.length) add('bot', 'New session — say hi or upload a document.');
+    msgs.forEach(m => add(m.role === 'user' ? 'user' : 'bot', m.content));
+  } catch (e) { add('bot', 'Error: ' + e.message); }
+}
+
+async function refreshSessions() {
+  try {
+    const d = await apiGet('/api/sessions');
+    const server = d.sessions || [];
+    const byId = {};
+    server.forEach(s => { byId[s.id] = s; });
+    sessions = server.map(s => {
+      const local = sessions.find(x => x.id === s.id);
+      return { id: s.id, title: (local && local.title && local.title !== 'Session') ? local.title : (s.title || 'Session') };
+    });
+    const cur = sessions.find(x => x.id === currentChat);
+    if (!cur && currentChat) sessions.unshift({ id: currentChat, title: 'Session' });
+    saveSessions();
+    renderSessions();
+  } catch (e) {}
+}
+
+function newSession() {
+  const id = 's_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  sessions.unshift({ id: id, title: 'Session' });
+  saveSessions();
+  switchSession(id);
+}
+
+function logout() {
+  TOKEN = ''; USER = '';
+  localStorage.removeItem('hermes_token');
+  localStorage.removeItem('hermes_user');
+  showLogin();
+}
+
+async function refreshGmail() {
+  const btn = document.getElementById('gmail');
+  const el = document.getElementById('gmailstate');
+  try {
+    const d = await apiGet('/api/gmail/status');
+    el.textContent = d.connected ? 'connected' : 'connect';
+    btn.classList.toggle('connected', !!d.connected);
+  } catch (e) {
+    if (e.message === 'unauthorized') { logout(); } else { el.textContent = '…'; }
+  }
+}
+
+document.getElementById('loginform').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const u = document.getElementById('username').value.trim();
+  const p = document.getElementById('password').value;
+  document.getElementById('loginerr').textContent = '';
+  try {
+    const d = await api('/api/login', {username: u, password: p}, false);
+    TOKEN = d.token; USER = d.user;
+    localStorage.setItem('hermes_token', TOKEN);
+    localStorage.setItem('hermes_user', USER);
+    document.getElementById('password').value = '';
+    loadSessions();
+    if (!sessions.length) newSession(); else switchSession(sessions[0].id);
+    refreshSessions();
+    refreshGmail();
+    showChat();
+    if (!localStorage.getItem('hermes_onboarded:' + USER)) {
+      add('bot', '…');
+      try {
+        const r = await api('/api/onboard', {chat_id: currentChat}, false);
+        const last = document.querySelector('.msg.bot:last-of-type');
+        last.textContent = r.reply;
+        localStorage.setItem('hermes_onboarded:' + USER, '1');
+        refreshSessions();
+      } catch (err) {
+        const last = document.querySelector('.msg.bot:last-of-type');
+        last.className = 'msg err';
+        last.textContent = 'Error: ' + err.message;
+      }
+    }
+  } catch (err) {
+    document.getElementById('loginerr').textContent = err.message === 'unauthorized' ? 'Invalid username or password' : 'Error: ' + err.message;
+  }
+});
+
+document.getElementById('logout').addEventListener('click', logout);
+
+document.getElementById('gmail').addEventListener('click', async () => {
+  try {
+    const d = await api('/api/gmail/auth-url', {}, false);
+    window.open(d.url, '_blank');
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      const s = await apiGet('/api/gmail/status');
+      if (s.connected) { refreshGmail(); break; }
+    }
+  } catch (e) { alert(e.message); }
+});
+
+document.getElementById('newsess').addEventListener('click', newSession);
+
+document.getElementById('file').addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  if (!f) { attached = null; document.getElementById('filelabel').textContent = '📎'; return; }
+  if (f.size > 20 * 1024 * 1024) { alert('File too large (max 20MB)'); e.target.value = ''; return; }
+  attached = f;
+  document.getElementById('filelabel').textContent = '📎 ' + f.name;
+});
+
+document.getElementById('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('msg');
+  const btn = document.getElementById('send');
+  const text = input.value.trim();
+  if (!text && !attached) return;
+  input.value = ''; btn.disabled = true;
+  add('user', (attached ? '📎 ' + attached.name + '\n' : '') + text || '(attached file)');
+  add('bot', '…');
+  try {
+    const fd = new FormData();
+    fd.append('message', text);
+    fd.append('chat_id', currentChat || 'default');
+    if (attached) fd.append('file', attached);
+    const headers = {};
+    if (TOKEN) headers['X-Chatbot-Token'] = TOKEN;
+    const r = await fetch('/api/chat', {method: 'POST', headers, body: fd});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || r.status);
+    document.querySelector('.msg.bot:last-of-type').textContent = d.reply;
+    const s = sessions.find(x => x.id === currentChat);
+    if (s && (s.title === 'Session')) {
+      s.title = text.slice(0, 30) || '(file)';
+      saveSessions(); renderSessions();
+    }
+    refreshSessions();
+  } catch (err) {
+    const last = document.querySelector('.msg.bot:last-of-type');
+    last.className = 'msg err';
+    last.textContent = 'Error: ' + err.message;
+    if (err.message === 'unauthorized') { logout(); }
+  }
+  attached = null;
+  document.getElementById('filelabel').textContent = '📎';
+  document.getElementById('file').value = '';
+  btn.disabled = false;
+  input.focus();
+});
+
+if (TOKEN && USER) {
+  loadSessions();
+  if (!sessions.length) newSession(); else switchSession(sessions[0].id);
+  refreshSessions(); refreshGmail(); showChat();
+} else showLogin();
+</script>
+</body>
+</html>

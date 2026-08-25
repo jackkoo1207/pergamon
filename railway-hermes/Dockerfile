@@ -32,6 +32,7 @@ ENV REG_SEED_DIR=/opt/regs
 COPY entrypoint.sh /usr/local/bin/hermes-entrypoint
 COPY chatbot.py /opt/hermes/chatbot.py
 COPY gmail_token.py /opt/hermes/gmail_token.py
+COPY page.html /opt/hermes/page.html
 RUN chmod +x /usr/local/bin/hermes-entrypoint
 
 EXPOSE 3000

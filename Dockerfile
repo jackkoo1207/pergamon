@@ -29,6 +29,7 @@ ENV REG_SEED_DIR=/opt/regs
 COPY railway-hermes/entrypoint.sh /usr/local/bin/hermes-entrypoint
 COPY railway-hermes/chatbot.py /opt/hermes/chatbot.py
 COPY railway-hermes/gmail_token.py /opt/hermes/gmail_token.py
+COPY railway-hermes/page.html /opt/hermes/page.html
 RUN chmod +x /usr/local/bin/hermes-entrypoint
 
 EXPOSE 3000

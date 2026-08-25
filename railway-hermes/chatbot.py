@@ -39,7 +39,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from flask import Flask, jsonify, redirect, render_template_string, request
+from flask import Flask, Response, jsonify, redirect, request
 
 try:
     import psycopg2
@@ -131,197 +131,7 @@ _PROVIDER_ENV_KEYS = ["DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"
                       "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY",
                       "MISTRAL_API_KEY", "NOUS_PORTAL_TOKEN"]
 
-PAGE = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hermes Chat</title>
-<style>
-  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 16px; background: #0f1115; color: #e6e6e6; }
-  h1 { font-size: 1.2rem; }
-  #messages { min-height: 60vh; }
-  .msg { margin: 10px 0; padding: 10px 14px; border-radius: 10px; white-space: pre-wrap; }
-  .user { background: #1d4ed8; margin-left: 40px; }
-  .bot { background: #1f2937; margin-right: 40px; }
-  .err { background: #7f1d1d; margin-right: 40px; }
-  .hint { color: #9ca3af; font-size: .8rem; }
-  form { display: flex; gap: 8px; position: sticky; bottom: 0; background: #0f1115; padding: 8px 0; }
-  input[type=text], input[type=password] { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #374151; background: #111827; color: #e6e6e6; }
-  input[type=password] { flex: 1; }
-  button { padding: 10px 16px; border-radius: 8px; border: 0; background: #2563eb; color: white; cursor: pointer; }
-  button:disabled { opacity: .5; }
-  #login { max-width: 320px; margin: 20vh auto 0; }
-  #login form { position: static; flex-direction: column; }
-  #login input { width: 100%; box-sizing: border-box; }
-  #loginerr { color: #f87171; font-size: .85rem; min-height: 1.2em; }
-  #topbar { display: flex; justify-content: space-between; align-items: center; }
-  #logout { background: #374151; padding: 6px 12px; font-size: .8rem; }
-</style>
-</head>
-<body>
-<div id="login" style="display:none">
-  <h1>Hermes Chat <span class="hint">(sign in)</span></h1>
-  <form id="loginform">
-    <input type="text" id="username" placeholder="Username" autocomplete="username">
-    <input type="password" id="password" placeholder="Password" autocomplete="current-password">
-    <button type="submit">Sign in</button>
-    <div id="loginerr"></div>
-  </form>
-</div>
-<div id="chat" style="display:none">
-  <div id="topbar"><h1>Hermes <span class="hint">(agentic · tools · multi-turn · Postgres)</span></h1>
-    <span><button id="gmail" title="Connect your Gmail so the agent can read/send your mail">✉️ <span id="gmailstate">…</span></button> <button id="logout">Log out</button></span>
-  </div>
-  <div id="messages"></div>
-  <form id="form">
-    <input type="text" id="msg" placeholder="Ask anything… (or attach a file)" autocomplete="off">
-    <label id="filelabel" for="file" title="Attach a file (pdf, docx, pptx, xlsx, txt, …)">📎</label>
-    <input type="file" id="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.csv,.md,.json,.rtf,.odt,.ods" hidden>
-    <button id="send" type="submit">Send</button>
-  </form>
-</div>
-<script>
-let TOKEN = localStorage.getItem('hermes_token') || '';
-let USER = localStorage.getItem('hermes_user') || '';
-let attached = null;
-
-function showChat() {
-  document.getElementById('login').style.display = 'none';
-  document.getElementById('chat').style.display = 'block';
-}
-function showLogin() {
-  document.getElementById('login').style.display = 'block';
-  document.getElementById('chat').style.display = 'none';
-}
-
-async function api(path, body, isForm) {
-  const headers = {};
-  if (TOKEN) headers['X-Chatbot-Token'] = TOKEN;
-  let payload = body;
-  if (!isForm && body) { headers['Content-Type'] = 'application/json'; payload = JSON.stringify(body); }
-  const r = await fetch(path, {method: 'POST', headers, body: payload});
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.error || r.status);
-  return d;
-}
-
-document.getElementById('loginform').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const u = document.getElementById('username').value.trim();
-  const p = document.getElementById('password').value;
-  document.getElementById('loginerr').textContent = '';
-  try {
-    const d = await api('/api/login', {username: u, password: p}, false);
-    TOKEN = d.token; USER = d.user;
-    localStorage.setItem('hermes_token', TOKEN);
-    localStorage.setItem('hermes_user', USER);
-    const cid = localStorage.getItem('chatId:' + USER) || (Date.now() + '-' + Math.random().toString(36).slice(2, 8));
-    localStorage.setItem('chatId:' + USER, cid);
-    document.getElementById('password').value = '';
-    showChat();
-  } catch (err) {
-    document.getElementById('loginerr').textContent = err.message === 'unauthorized' ? 'Invalid username or password' : 'Error: ' + err.message;
-  }
-});
-
-document.getElementById('logout').addEventListener('click', () => {
-  TOKEN = ''; USER = '';
-  localStorage.removeItem('hermes_token');
-  localStorage.removeItem('hermes_user');
-  showLogin();
-});
-
-async function refreshGmail() {
-  const el = document.getElementById('gmailstate');
-  try {
-    const d = await api('/api/gmail/status', null, false);
-    el.textContent = d.connected ? 'connected' : 'connect';
-    el.style.color = d.connected ? '#4ade80' : '';
-  } catch (e) {
-    if (e.message === 'unauthorized') { // stale token after a server restart
-      TOKEN = ''; USER = '';
-      localStorage.removeItem('hermes_token');
-      localStorage.removeItem('hermes_user');
-      showLogin();
-    } else {
-      el.textContent = '…';
-    }
-  }
-}
-document.getElementById('gmail').addEventListener('click', async () => {
-  try {
-    const d = await api('/api/gmail/auth-url', null, false);
-    window.open(d.url, '_blank');
-    // poll until the user finishes the consent flow
-    for (let i = 0; i < 60; i++) {
-      await new Promise(r => setTimeout(r, 3000));
-      const s = await api('/api/gmail/status', null, false);
-      if (s.connected) { refreshGmail(); break; }
-    }
-  } catch (e) { alert(e.message); }
-});
-function onLoadGmail() {
-  refreshGmail();
-  if (location.search.includes('gmail_connected')) {
-    history.replaceState(null, '', '/');
-    refreshGmail();
-  }
-}
-
-document.getElementById('file').addEventListener('change', (e) => {
-  const f = e.target.files[0];
-  if (!f) { attached = null; document.getElementById('filelabel').textContent = '📎'; return; }
-  if (f.size > 20 * 1024 * 1024) { alert('File too large (max 20MB)'); e.target.value = ''; return; }
-  attached = f;
-  document.getElementById('filelabel').textContent = '📎 ' + f.name;
-});
-
-function add(role, text) {
-  const el = document.createElement('div');
-  el.className = 'msg ' + role;
-  el.textContent = text;
-  document.getElementById('messages').appendChild(el);
-  window.scrollTo(0, document.body.scrollHeight);
-}
-
-document.getElementById('form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const input = document.getElementById('msg');
-  const btn = document.getElementById('send');
-  const text = input.value.trim();
-  if (!text && !attached) return;
-  input.value = ''; btn.disabled = true;
-  add('user', (attached ? '📎 ' + attached.name + '\n' : '') + text || '(attached file)');
-  add('bot', '…');
-  try {
-    const fd = new FormData();
-    fd.append('message', text);
-    fd.append('chat_id', localStorage.getItem('chatId:' + USER) || 'default');
-    if (attached) fd.append('file', attached);
-    const headers = {};
-    if (TOKEN) headers['X-Chatbot-Token'] = TOKEN;
-    const r = await fetch('/api/chat', {method: 'POST', headers, body: fd});
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.error || r.status);
-    document.querySelector('.msg.bot:last-of-type').textContent = d.reply;
-  } catch (err) {
-    const last = document.querySelector('.msg.bot:last-of-type');
-    last.className = 'msg err';
-    last.textContent = 'Error: ' + err.message;
-    if (err.message === 'unauthorized') { localStorage.removeItem('hermes_token'); showLogin(); }
-  }
-  attached = null;
-  document.getElementById('filelabel').textContent = '📎';
-  document.getElementById('file').value = '';
-  btn.disabled = false;
-  input.focus();
-});
-
-if (TOKEN && USER) { showChat(); onLoadGmail(); } else showLogin();
-</script>
-</body>
-</html>"""
+PAGE = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page.html"), encoding="utf-8").read()
 
 
 # ---------------------------------------------------------------- auth
@@ -791,7 +601,7 @@ def _run_agent(chat_id: str, message: str, user: str = "") -> str:
 # ------------------------------------------------------------------ routes
 @app.get("/")
 def index():
-    return render_template_string(PAGE)
+    return Response(PAGE, mimetype="text/html")
 
 
 @app.post("/api/login")
@@ -922,6 +732,74 @@ def oauth2callback():
     _gmail_token_store(entry["user"], refresh)
     print(f"[chatbot] gmail connected for user {entry['user']}")
     return redirect("/?gmail_connected=1")
+
+
+@app.get("/api/sessions")
+def sessions_list():
+    user = _auth_user()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    rows = _db_query(
+        "SELECT m.chat_id, count(*) AS n, max(m.created_at) AS last_at, "
+        "(SELECT content FROM hermes_messages x WHERE x.chat_id = m.chat_id "
+        " ORDER BY x.id DESC LIMIT 1) AS last_msg "
+        "FROM hermes_messages m WHERE m.chat_id LIKE %s "
+        "GROUP BY m.chat_id ORDER BY last_at DESC NULLS LAST",
+        (f"{user}:%",),
+    )
+    out = []
+    for chat_id, n, last_at, last_msg in rows:
+        client_id = chat_id.split(":", 1)[1] if ":" in chat_id else chat_id
+        snippet = (last_msg or "").strip().splitlines()[0][:40] if last_msg else ""
+        out.append({
+            "id": client_id, "count": n,
+            "last_at": last_at.isoformat() if last_at else None,
+            "title": snippet or "Session",
+        })
+    return jsonify(sessions=out)
+
+
+@app.get("/api/messages")
+def messages_list():
+    user = _auth_user()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    client_id = (request.args.get("chat_id") or "default")[:64]
+    rows = _db_query(
+        "SELECT role, content FROM hermes_messages WHERE chat_id = %s "
+        "ORDER BY id DESC LIMIT 60",
+        (f"{user}:{client_id}",),
+    )
+    return jsonify(messages=[{"role": r[0], "content": r[1]} for r in reversed(rows)])
+
+
+_ONBOARD_PROMPT = (
+    "Introduce yourself as the compliance cross-check assistant. Tell the user: "
+    "who you are, which database you are connected to (their per-user schema "
+    "u_<user> plus the shared EU regulations), how to connect Gmail via the "
+    "sidebar connector, and guide them to upload their documentation draft "
+    "(instruction manual / Contact.md) with the paperclip button. "
+    "Keep it under 150 words, friendly and direct."
+)
+
+
+@app.post("/api/onboard")
+def onboard():
+    user = _auth_user()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    client_id = (data.get("chat_id") or "default")[:64]
+    chat_id = f"{user}:{client_id}"
+    _db_log_message(chat_id, "user", "[onboarding]")
+    with _lock:
+        started = time.time()
+        try:
+            reply = _run_agent(chat_id, _ONBOARD_PROMPT, user)
+        except subprocess.TimeoutExpired:
+            return jsonify(error=f"agent timed out after {TIMEOUT}s"), 504
+    _db_log_message(chat_id, "agent", reply)
+    return jsonify(reply=reply, elapsed=round(time.time() - started, 1))
 
 
 if __name__ == "__main__":
