@@ -418,9 +418,10 @@ def _ensure_os_user(username: str) -> str | None:
                        capture_output=True, text=True, check=False)
 
     # standing instructions for this user's agent (loaded from cwd by hermes)
-    agents_md = f"""# Compliance cross-check agent
+    agents_md = f"""# SmartReviewAgent — EU technical-documentation review assistant
 
-Your user is a business owner / compliance officer. Your job:
+Your name is SmartReviewAgent. You guide the user to create technical
+documentation that fulfills the EU regulations.[truncated]
 
 1. Cross-check the user's instruction manual against the applicable EU regulations.
 2. EU regulations live in the SHARED schema (readable by every user):
@@ -734,6 +735,35 @@ def oauth2callback():
     return redirect("/?gmail_connected=1")
 
 
+ONBOARD_TEXT = (
+    "Hi! I am SmartReviewAgent — an agent that guides you to make a technical "
+    "documentation that fulfills the EU regulations.\n\n"
+    "Here is what I can do for you:\n\n"
+    "• I have an isolated database that stores all your personal documents — "
+    "only you and I can access them.\n"
+    "• You can upload your draft of your technical document anytime with the "
+    "📎 button.\n"
+    "• I will help you to review it and check if it satisfies the EU regulations.\n"
+    "• If you have any uncertainty about some details, you can send me the Gmail "
+    "of your technical team and I will email them for you.\n"
+    "• Connect your own Gmail with the ✉️ button if you want me to send emails "
+    "on your behalf.\n\n"
+    "Upload your document now to get started!"
+)
+
+
+@app.post("/api/onboard")
+def onboard():
+    user = _auth_user()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    data = request.get_json(silent=True) or {}
+    client_id = (data.get("chat_id") or "default")[:64]
+    chat_id = f"{user}:{client_id}"
+    _db_log_message(chat_id, "agent", ONBOARD_TEXT)
+    return jsonify(reply=ONBOARD_TEXT)
+
+
 @app.get("/api/sessions")
 def sessions_list():
     user = _auth_user()
@@ -771,35 +801,6 @@ def messages_list():
         (f"{user}:{client_id}",),
     )
     return jsonify(messages=[{"role": r[0], "content": r[1]} for r in reversed(rows)])
-
-
-_ONBOARD_PROMPT = (
-    "Introduce yourself as the compliance cross-check assistant. Tell the user: "
-    "who you are, which database you are connected to (their per-user schema "
-    "u_<user> plus the shared EU regulations), how to connect Gmail via the "
-    "sidebar connector, and guide them to upload their documentation draft "
-    "(instruction manual / Contact.md) with the paperclip button. "
-    "Keep it under 150 words, friendly and direct."
-)
-
-
-@app.post("/api/onboard")
-def onboard():
-    user = _auth_user()
-    if user is None:
-        return jsonify(error="unauthorized"), 401
-    data = request.get_json(silent=True) or {}
-    client_id = (data.get("chat_id") or "default")[:64]
-    chat_id = f"{user}:{client_id}"
-    _db_log_message(chat_id, "user", "[onboarding]")
-    with _lock:
-        started = time.time()
-        try:
-            reply = _run_agent(chat_id, _ONBOARD_PROMPT, user)
-        except subprocess.TimeoutExpired:
-            return jsonify(error=f"agent timed out after {TIMEOUT}s"), 504
-    _db_log_message(chat_id, "agent", reply)
-    return jsonify(reply=reply, elapsed=round(time.time() - started, 1))
 
 
 if __name__ == "__main__":

@@ -137,8 +137,19 @@ async function switchSession(id) {
   try {
     const d = await apiGet('/api/messages?chat_id=' + encodeURIComponent(id));
     const msgs = d.messages || [];
-    if (!msgs.length) add('bot', 'New session — say hi or upload a document.');
-    msgs.forEach(m => add(m.role === 'user' ? 'user' : 'bot', m.content));
+    if (!msgs.length) {
+      add('bot', '…');
+      try {
+        const r = await api('/api/onboard', {chat_id: id}, false);
+        document.querySelector('.msg.bot:last-of-type').textContent = r.reply;
+        refreshSessions();
+      } catch (e) {
+        document.querySelector('.msg.bot:last-of-type').className = 'msg err';
+        document.querySelector('.msg.bot:last-of-type').textContent = 'Error: ' + e.message;
+      }
+    } else {
+      msgs.forEach(m => add(m.role === 'user' ? 'user' : 'bot', m.content));
+    }
   } catch (e) { add('bot', 'Error: ' + e.message); }
 }
 
@@ -201,20 +212,6 @@ document.getElementById('loginform').addEventListener('submit', async (e) => {
     refreshSessions();
     refreshGmail();
     showChat();
-    if (!localStorage.getItem('hermes_onboarded:' + USER)) {
-      add('bot', '…');
-      try {
-        const r = await api('/api/onboard', {chat_id: currentChat}, false);
-        const last = document.querySelector('.msg.bot:last-of-type');
-        last.textContent = r.reply;
-        localStorage.setItem('hermes_onboarded:' + USER, '1');
-        refreshSessions();
-      } catch (err) {
-        const last = document.querySelector('.msg.bot:last-of-type');
-        last.className = 'msg err';
-        last.textContent = 'Error: ' + err.message;
-      }
-    }
   } catch (err) {
     document.getElementById('loginerr').textContent = err.message === 'unauthorized' ? 'Invalid username or password' : 'Error: ' + err.message;
   }
