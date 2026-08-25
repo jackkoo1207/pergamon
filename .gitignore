@@ -5,7 +5,6 @@ HBM_MIG200_EU_DoC.txt
 
 # Google OAuth client secrets — NEVER commit (public repo)
 client_secret_*.json
-
 # OS / editor junk
 Thumbs.db
 Desktop.ini
@@ -13,20 +12,14 @@ Desktop.ini
 *.swp
 .idea/
 .vscode/
-
 # git
 *.orig
-
 # user's local screenshots
 image.png
-
 # test artifacts derived from the HBM manual
 fake_manual*.pdf
-
 # python cache
 __pycache__/
 *.pyc
-
 # manual files (third-party copyright)
-manual*.pdf
 manual*.pdf
