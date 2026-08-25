@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """Chatbot website for the Railway-deployed Hermes agent.
 
 Each message runs a FULL agent session via `hermes chat -Q -q "<msg>"` —
@@ -567,6 +569,7 @@ def _ensure_os_user(username: str) -> str | None:
         return None
 
     osuser = _safe_os_user(username)
+    schema = f"u_{re.sub(r'[^A-Za-z0-9_]', '_', username)}"  # same schema as _ensure_user_db
     home = f"/home/{osuser}"
     if subprocess.run(["id", "-u", osuser], capture_output=True).returncode != 0:
         subprocess.run(["useradd", "-m", "-s", "/bin/bash", osuser], check=False)
@@ -616,8 +619,8 @@ Your user is a business owner / compliance officer. Your job:
    THIS user's own mail only:
      ACCESS=$(python3 /opt/hermes/gmail_token.py)
      curl -H "Authorization: Bearer $ACCESS" "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5"
-     curl -H "Authorization: Bearer $ACCESS" "https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}"
-   To send: POST /gmail/v1/users/me/messages with {"raw": "<base64url of RFC822 message>"}.
+     curl -H "Authorization: Bearer $ACCESS" "https://gmail.googleapis.com/gmail/v1/users/me/messages/{{id}}"
+   To send: POST /gmail/v1/users/me/messages with {{"raw": "<base64url of RFC822 message>"}}.
    Never access any other mailbox.
 """
     with open(os.path.join(home, "AGENTS.md"), "w", encoding="utf-8") as f:
