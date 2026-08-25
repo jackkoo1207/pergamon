@@ -657,6 +657,53 @@ def chat():
     return jsonify(reply=reply, elapsed=round(time.time() - started, 1))
 
 
+def _gmail_access_token(username: str) -> str | None:
+    """Exchange the user's stored Gmail refresh token for a short-lived access
+    token (same logic as the agent-side gmail_token.py helper)."""
+    if not _PSYCOPG2 or not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return None
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", username)
+    try:
+        rows = _db_query(f"SELECT payload FROM u_{safe}.credentials WHERE service = 'gmail'")
+    except Exception:
+        rows = []
+    if not rows:
+        return None
+    refresh = rows[0][0]
+    try:
+        data = urllib.parse.urlencode({
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": refresh,
+            "grant_type": "refresh_token",
+        }).encode()
+        with urllib.request.urlopen(urllib.request.Request(
+                "https://oauth2.googleapis.com/token", data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"}), timeout=20) as r:
+            tok = json.loads(r.read().decode())
+        return tok.get("access_token")
+    except Exception:
+        return None
+
+
+@app.get("/api/gmail/test")
+def gmail_test():
+    user = _auth_user()
+    if user is None:
+        return jsonify(error="unauthorized"), 401
+    access = _gmail_access_token(user)
+    if not access:
+        return jsonify(ok=False, error="not connected or token exchange failed"), 200
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+                headers={"Authorization": "Bearer " + access}), timeout=20) as r:
+            d = json.loads(r.read().decode())
+        return jsonify(ok=True, email=d.get("emailAddress", ""))
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 200
+
+
 @app.post("/api/gmail/auth-url")
 def gmail_auth_url():
     user = _auth_user()
