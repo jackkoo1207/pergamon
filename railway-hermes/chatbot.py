@@ -28,6 +28,7 @@ unreachable.
 Requires: flask, psycopg2-binary (installed in the image).
 """
 import os
+import json
 import re
 import secrets
 import shutil
