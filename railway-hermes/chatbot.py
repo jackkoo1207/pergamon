@@ -167,7 +167,8 @@ def _db_connect():
         return None
     try:
         if _db is None or _db.closed:
-            _db = psycopg2.connect(DB_URL)
+            # connect_timeout: never hang startup/requests on an unreachable DB
+            _db = psycopg2.connect(DB_URL, connect_timeout=8)
         return _db
     except Exception:
         return None
@@ -280,7 +281,11 @@ def _ensure_user_db(username: str) -> str | None:
             cur.execute(pgsql.SQL(
                 "CREATE TABLE IF NOT EXISTS {}.documents ("
                 " id SERIAL PRIMARY KEY, filename TEXT NOT NULL, path TEXT, "
-                " content TEXT, uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                " content TEXT, container BYTEA, uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            ).format(pgsql.Identifier(schema)))
+            # migration for existing tables: add the container column if missing
+            cur.execute(pgsql.SQL(
+                "ALTER TABLE {}.documents ADD COLUMN IF NOT EXISTS container BYTEA"
             ).format(pgsql.Identifier(schema)))
             cur.execute(pgsql.SQL("GRANT ALL ON {}.documents TO {}")
                         .format(pgsql.Identifier(schema), pgsql.Identifier(role)))
@@ -348,7 +353,8 @@ def _save_upload(user: str, file_obj):
     print(f"[chatbot] saved upload: {dest} ({size} bytes)")
 
     # record in the user's own schema (per-user database) so the agent can
-    # query it; text files get their content mirrored for easy grep
+    # query it; the FULL bytes go into `container` so uploads survive redeploys
+    # (the file on disk is restored from the DB at startup if missing)
     content = None
     if dest.lower().endswith((".txt", ".md", ".csv", ".json")):
         try:
@@ -356,11 +362,48 @@ def _save_upload(user: str, file_obj):
                 content = f.read()[:200000]
         except OSError:
             content = None
+    with open(dest, "rb") as f:
+        raw = f.read()
     _db_exec(
-        f"INSERT INTO u_{safe_user}.documents (filename, path, content) VALUES (%s, %s, %s)",
-        (os.path.basename(dest), dest, content),
+        f"INSERT INTO u_{safe_user}.documents (filename, path, content, container) VALUES (%s, %s, %s, %s)",
+        (os.path.basename(dest), dest, content, raw),
     )
     return dest
+
+
+def _restore_uploads() -> None:
+    """After a redeploy the container filesystem is fresh — restore any uploaded
+    file that has DB metadata + stored bytes (`container`) but is missing on
+    disk, so the agent's file paths keep working across restarts."""
+    if not _PSYCOPG2:
+        return
+    try:
+        schemas = _db_query(
+            "SELECT table_schema FROM information_schema.tables "
+            "WHERE table_name = 'documents' AND table_schema LIKE 'u\_%' ESCAPE '\'")
+    except Exception:
+        return
+    restored = 0
+    for (schema,) in schemas:
+        rows = _db_query(
+            f"SELECT id, path, container FROM {schema}.documents "
+            "WHERE path IS NOT NULL AND container IS NOT NULL")
+        for doc_id, path, container in rows:
+            try:
+                if os.path.exists(path):
+                    continue
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(bytes(container))
+                osuser = path.split("/")[2] if path.startswith("/home/") else None
+                if osuser:
+                    subprocess.run(["chown", f"{osuser}:{osuser}", path], check=False)
+                restored += 1
+                print(f"[chatbot] restored upload from DB: {path} ({len(container)} bytes)")
+            except OSError as e:
+                print(f"[chatbot] WARNING: could not restore {path}: {e}")
+    if restored:
+        print(f"[chatbot] restored {restored} uploaded file(s) from the database")
 
 
 def _remember(chat_id: str, session_id: str, persist: bool = True) -> None:
@@ -430,6 +473,9 @@ documentation that fulfills the EU regulations.[truncated]
    psql "$DATABASE_URL" -c "SELECT title, LEFT(content, 500) FROM shared.regulations WHERE title ILIKE '%lvd%';"
 3. The user's documents (instruction manual, contact info, uploads) are in YOUR schema:
    psql "$DATABASE_URL" -c "SELECT id, filename, path, uploaded_at FROM {schema}.documents ORDER BY uploaded_at DESC;"
+   The `container` column holds the full uploaded file bytes (survives redeploys and
+   is auto-restored to disk at startup) — if a referenced file is missing on disk,
+   query its bytes from the documents table instead of asking the user to re-upload.
    and as files in your home directory: /home/{osuser}/uploads/
 4. When checking a manual: identify the applicable regulations (GPSR, LVD 2014/35/EU,
    PPWR, RoHS, WEEE, ...), then verify each required element: safety instructions and
@@ -898,6 +944,7 @@ def messages_list():
 
 if __name__ == "__main__":
     _db_init()
+    _restore_uploads()
     _db_load_sessions()
     print(f"[chatbot] users configured: {', '.join(USERS)}")
     print(f"[chatbot] surface ready (hermes={HERMES}, token_ttl={TOKEN_TTL_HOURS}h)")
