@@ -7,7 +7,7 @@ Bundle: `D:\Pergamon\railway-hermes\` + root `Dockerfile` / `railway.toml` (repo
 
 ## What it does
 1. Writes API keys from Railway env vars into Hermes' `.env`
-2. Sets the model (`RAILWAY_MODEL`, default `deepseek/deepseek-v4-flash` — works with `DEEPSEEK_API_KEY`)
+2. Sets the model (`RAILWAY_MODEL`, default `deepseek-v4-flash` — works with `DEEPSEEK_API_KEY`)
 3. **PostgreSQL probe**: connects to `DATABASE_URL` with `psql`, prints all tables + row counts
    to the logs — so you can "see what is inside" in Railway's Logs tab, no agent needed
 4. **Session memory → Postgres**: chat history + chat→hermes-session mapping persisted to
