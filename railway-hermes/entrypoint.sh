@@ -34,7 +34,7 @@ done
 
 # 3. Model/provider (override with RAILWAY_MODEL; defaults to DeepSeek since
 #    DEEPSEEK_API_KEY is the key you provisioned on Railway)
-MODEL="${RAILWAY_MODEL:-deepseek/deepseek-chat}"
+MODEL="${RAILWAY_MODEL:-deepseek/deepseek-v4-flash}"
 if ! hermes config set model "$MODEL" 2>/dev/null; then
   echo "[hermes-entrypoint] WARNING: 'hermes config set model $MODEL' failed — check HERMES_HOME permissions"
 fi

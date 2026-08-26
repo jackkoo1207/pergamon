@@ -3,7 +3,7 @@
 #   DATABASE_URL    (Railway Postgres plugin — auto-provided)
 #   DEEPSEEK_API_KEY (LLM provider key)
 #   SURFACE          (optional: chat | gateway | dashboard | proxy)
-#   RAILWAY_MODEL    (optional, default deepseek/deepseek-chat)
+#   RAILWAY_MODEL    (optional, default deepseek/deepseek-v4-flash)
 
 [build]
 builder = "DOCKERFILE"

@@ -453,7 +453,7 @@ def _ensure_os_user(username: str) -> str | None:
         with open(env_path, "w", encoding="utf-8") as f:
             f.write("\n".join(env_lines) + "\n")
         subprocess.run(["chown", f"{osuser}:{osuser}", env_path], check=False)
-    model = os.environ.get("RAILWAY_MODEL", "deepseek/deepseek-chat")
+    model = os.environ.get("RAILWAY_MODEL", "deepseek/deepseek-v4-flash")
     hermes_bin = os.path.abspath(HERMES)
     if shutil.which("runuser"):
         subprocess.run(["runuser", "-u", osuser, "--", "env", f"HERMES_HOME={hh}",
